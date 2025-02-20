@@ -1,0 +1,4 @@
+github.com/GehirnInc/crypt v0.0.0-20190301055215-6c0105aabd46 h1:rs0kDBt2zF4/CM9rO5/iH+U22jnTygPlqWgX55Ufcxg=
+github.com/GehirnInc/crypt v0.0.0-20190301055215-6c0105aabd46/go.mod h1:kC29dT1vFpj7py2OvG1khBdQpo3kInWP+6QipLbdngo=
+gitlab.com/raspi-alpine/go-raspi-alpine v0.0.0-20211225112919-2293efba9440 h1:BO6Gv7dk9hfDQDbsWVtwg5FN+PN9ZW/1rVLfPtPanAY=
+gitlab.com/raspi-alpine/go-raspi-alpine v0.0.0-20211225112919-2293efba9440/go.mod h1:tj6pVh/BffpR2SX45BtF6WlCLCgVTPZRA8iW6GpP+FA=
