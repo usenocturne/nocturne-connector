@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 usage() {
   echo
-  echo "Usage: build_image.sh [-i IMAGE] [-f|-7|-8] [-p]"
+  echo "Usage: build.sh [-i IMAGE] [-f|-7|-8] [-p]"
   echo "           -i is the docker image to use for the build"
   echo "           -p pulls newest version of the image before running"
   echo "           -f builds armhf section"
