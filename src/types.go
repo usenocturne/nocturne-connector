@@ -6,6 +6,10 @@ type HelloResponse struct {
 	ActiveBootSlot string `json:"activeBootSlot"`
 }
 
+type OKResponse struct {
+	Status string `json:"status"`
+}
+
 type ErrorResponse struct {
 	Error string `json:"error"`
 }

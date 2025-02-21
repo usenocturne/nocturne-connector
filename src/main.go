@@ -333,7 +333,7 @@ func main() {
 			return
 		}
 
-		if err := json.NewEncoder(w).Encode(res); err != nil {
+		if err := json.NewEncoder(w).Encode(OKResponse{Status: "success"}); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to encode JSON: " + err.Error()})
 			return
@@ -370,7 +370,44 @@ func main() {
 			return
 		}
 
-		if err := json.NewEncoder(w).Encode(res); err != nil {
+		if err := json.NewEncoder(w).Encode(OKResponse{Status: "success"}); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to encode JSON: " + err.Error()})
+			return
+		}
+	}))
+
+	// DELETE /network/remove/{id}
+	http.HandleFunc("/network/remove/", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "DELETE" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Method not allowed"})
+			return
+		}
+
+		id := strings.TrimPrefix(r.URL.Path, "/network/remove/")
+		if id == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Network id is required"})
+			return
+		}
+		networkId := strings.TrimSpace(id)
+
+		res, err := ctrl.SendRequest(ctx, fmt.Sprintf("REMOVE_NETWORK %s", networkId))
+		if res != "OK\n" {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send remove network command: " + err.Error()})
+			return
+		}
+
+		res, err = ctrl.SendRequest(ctx, "SAVE_CONFIG")
+		if res != "OK\n" {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to save config: " + err.Error()})
+			return
+		}
+
+		if err := json.NewEncoder(w).Encode(OKResponse{Status: "success"}); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to encode JSON: " + err.Error()})
 			return
@@ -383,7 +420,8 @@ func main() {
 	}
 
 	log.Printf("Server starting on :%s", port)
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
+	//if err := http.ListenAndServe(":"+port, nil); err != nil {
+	if err := http.ListenAndServeTLS(":"+port, "cert.crt", "cert.key", nil); err != nil {
 		log.Fatal(err)
 	}
 }
