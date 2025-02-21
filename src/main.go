@@ -82,8 +82,8 @@ func main() {
 		}()
 	}))
 
-	// GET /hello
-	http.HandleFunc("/hello", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	// GET /info
+	http.HandleFunc("/info", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Method not allowed"})
@@ -114,7 +114,7 @@ func main() {
 			bootSlot = "B"
 		}
 
-		response := HelloResponse{
+		response := InfoResponse{
 			Version:        version,
 			OSVersion:      osVersion,
 			ActiveBootSlot: bootSlot,

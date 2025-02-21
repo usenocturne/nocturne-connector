@@ -1,6 +1,6 @@
 package main
 
-type HelloResponse struct {
+type InfoResponse struct {
 	Version        string `json:"version"`
 	OSVersion      string `json:"osVersion"`
 	ActiveBootSlot string `json:"activeBootSlot"`
