@@ -15,14 +15,6 @@ import (
 	alpine_builder "gitlab.com/raspi-alpine/go-raspi-alpine"
 )
 
-type InfoResponse struct {
-	Version string `json:"version"`
-}
-
-type ErrorResponse struct {
-	Error string `json:"error"`
-}
-
 func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -42,7 +34,7 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 func main() {
 	ctrl, err := wpa_supplicant.Connect("/run/wpa_supplicant/wlan0")
 	if err != nil {
-		fmt.Printf("failed to connect to wpa_supplicant: %s\n", err)
+		fmt.Printf("Failed to connect to wpa_supplicant: %s\n", err)
 		os.Exit(1)
 	}
 
@@ -50,11 +42,11 @@ func main() {
 
 	res, _ := ctrl.SendRequest(ctx, "PING")
 	if res != "PONG\n" {
-		fmt.Printf("failed to ping wpa_supplicant control interface: %s\n", res)
+		fmt.Printf("Failed to ping wpa_supplicant control interface: %s\n", res)
 		os.Exit(1)
 	}
 
-	fmt.Printf("connected to wpa_supplicant control interface\n")
+	fmt.Printf("Connected to wpa_supplicant control interface\n")
 
 	go func() {
 		err := ctrl.Listen(ctx, func(event wpa_supplicant.Event) {
@@ -101,21 +93,20 @@ func main() {
 		versionBytes, err := os.ReadFile("/etc/nocturne-connector/version.txt")
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: err.Error()})
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to read version file: " + err.Error()})
 			return
 		}
-		version := string(versionBytes)
+		version := strings.TrimSpace(string(versionBytes))
 
 		osVersionBytes, err := os.ReadFile("/etc/alpine-release")
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: err.Error()})
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to read alpine-release file: " + err.Error()})
 			return
 		}
-		osVersion := string(osVersionBytes)
+		osVersion := strings.TrimSpace(string(osVersionBytes))
 
 		uBootActive := alpine_builder.UBootActive()
-
 		bootSlot := "unknown"
 		if uBootActive == 2 {
 			bootSlot = "A"
@@ -123,15 +114,15 @@ func main() {
 			bootSlot = "B"
 		}
 
-		response := map[string]string{
-			"version":        version,
-			"osVersion":      osVersion,
-			"activeBootSlot": bootSlot,
+		response := HelloResponse{
+			Version:        version,
+			OSVersion:      osVersion,
+			ActiveBootSlot: bootSlot,
 		}
 
 		if err := json.NewEncoder(w).Encode(response); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: err.Error()})
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to encode JSON: " + err.Error()})
 			return
 		}
 	}))
@@ -144,16 +135,82 @@ func main() {
 			return
 		}
 
-		networkInfo, err := alpine_builder.GetNetworkInfo()
+		res, err := ctrl.SendRequest(ctx, "STATUS")
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: err.Error()})
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send status command: " + err.Error()})
 			return
 		}
 
-		if err := json.NewEncoder(w).Encode(networkInfo); err != nil {
+		lines := strings.Split(res, "\n")
+		rawConfig := make(map[string]string)
+		for _, line := range lines {
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) == 2 {
+				key := strings.TrimSpace(parts[0])
+				value := strings.TrimSpace(parts[1])
+				rawConfig[key] = value
+			}
+		}
+
+		status := NetworkStatus{
+			BSSID:          rawConfig["bssid"],
+			Freq:           rawConfig["freq"],
+			SSID:           rawConfig["ssid"],
+			ID:             rawConfig["id"],
+			WifiGeneration: rawConfig["wifi_generation"],
+			KeyMgmt:        rawConfig["key_mgmt"],
+			WPAState:       rawConfig["wpa_state"],
+			IPAddress:      rawConfig["ip_address"],
+		}
+
+		if err := json.NewEncoder(w).Encode(status); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: err.Error()})
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to encode JSON: " + err.Error()})
+			return
+		}
+	}))
+
+	// GET /network/list
+	http.HandleFunc("/network/list", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Method not allowed"})
+			return
+		}
+
+		res, err := ctrl.SendRequest(ctx, "LIST_NETWORKS")
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send list networks command: " + err.Error()})
+			return
+		}
+
+		networks := []map[string]string{}
+		scanner := bufio.NewScanner(strings.NewReader(res))
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+
+			fields := strings.Split(line, "\t")
+			if len(fields) != 4 {
+				continue
+			}
+
+			network := map[string]string{
+				"networkId": fields[0],
+				"ssid":      fields[1],
+				"bssid":     fields[2],
+				"flags":     fields[3],
+			}
+			networks = append(networks, network)
+		}
+
+		if err := json.NewEncoder(w).Encode(networks); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to encode JSON: " + err.Error()})
 			return
 		}
 	}))
@@ -169,7 +226,7 @@ func main() {
 		res, err := ctrl.SendRequest(ctx, "SCAN")
 		if res != "OK\n" {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: err.Error()})
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send scan command: " + err.Error()})
 			return
 		}
 
@@ -184,7 +241,7 @@ func main() {
 		res, err = ctrl.SendRequest(ctx, "SCAN_RESULTS")
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: err.Error()})
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to get scan results: " + err.Error()})
 			return
 		}
 
@@ -213,7 +270,109 @@ func main() {
 
 		if err := json.NewEncoder(w).Encode(networks); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: err.Error()})
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to encode JSON: " + err.Error()})
+			return
+		}
+	}))
+
+	// POST /network/connect
+	http.HandleFunc("/network/connect", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Method not allowed"})
+			return
+		}
+
+		var requestData struct {
+			SSID string `json:"ssid"`
+			PSK  string `json:"psk"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Invalid request body: " + err.Error()})
+			return
+		}
+
+		res, err := ctrl.SendRequest(ctx, "ADD_NETWORK")
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send add network command: " + err.Error()})
+			return
+		}
+
+		networkId := strings.TrimSpace(res)
+
+		res, err = ctrl.SendRequest(ctx, fmt.Sprintf("SET_NETWORK %s ssid \"%s\"", networkId, requestData.SSID))
+		if res != "OK\n" {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network SSID command: " + err.Error()})
+			return
+		}
+
+		if requestData.PSK == "" {
+			res, err = ctrl.SendRequest(ctx, fmt.Sprintf("SET_NETWORK %s key_mgmt NONE", networkId))
+			if res != "OK\n" {
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network key_mgmt command: " + err.Error()})
+				return
+			}
+		} else {
+			res, err = ctrl.SendRequest(ctx, fmt.Sprintf("SET_NETWORK %s psk \"%s\"", networkId, requestData.PSK))
+			if res != "OK\n" {
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network SSID command: " + err.Error()})
+				return
+			}
+		}
+
+		res, err = ctrl.SendRequest(ctx, "SAVE_CONFIG")
+		if res != "OK\n" {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to save config: " + err.Error()})
+			return
+		}
+
+		if err := json.NewEncoder(w).Encode(res); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to encode JSON: " + err.Error()})
+			return
+		}
+	}))
+
+	// POST /network/select/{id}
+	http.HandleFunc("/network/select/", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Method not allowed"})
+			return
+		}
+
+		id := strings.TrimPrefix(r.URL.Path, "/network/select/")
+		if id == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Network id is required"})
+			return
+		}
+		networkId := strings.TrimSpace(id)
+
+		res, err := ctrl.SendRequest(ctx, fmt.Sprintf("SELECT_NETWORK %s", networkId))
+		if res != "OK\n" {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send select network command: " + err.Error()})
+			return
+		}
+
+		res, err = ctrl.SendRequest(ctx, "SAVE_CONFIG")
+		if res != "OK\n" {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to save config: " + err.Error()})
+			return
+		}
+
+		if err := json.NewEncoder(w).Encode(res); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to encode JSON: " + err.Error()})
 			return
 		}
 	}))
