@@ -9,8 +9,13 @@ table ip filter {
 
     chain forward {
         type filter hook forward priority filter; policy accept;
+
         iifname "usb0" oifname "wlan0" ip saddr 172.16.42.0/24 ct state new accept
         iifname "usb0" oifname "wlan0" ip saddr 172.16.42.0/24 ct state established,related accept
+        
+        iifname "eth1" oifname "wlan0" ip saddr 172.16.42.0/24 ct state new accept
+        iifname "eth1" oifname "wlan0" ip saddr 172.16.42.0/24 ct state established,related accept
+
         ip daddr 172.16.42.2 tcp dport 22 ct state established,related,new accept
         ip daddr 172.16.42.2 tcp dport 9222 ct state established,related,new accept
     }
@@ -23,8 +28,10 @@ table ip filter {
 table ip nat {
     chain prerouting {
         type nat hook prerouting priority dstnat; policy accept;
+
         tcp dport 2022 iifname "eth0" dnat to 172.16.42.2:22
         tcp dport 2022 iifname "wlan0" dnat to 172.16.42.2:22
+
         tcp dport 9222 iifname "eth0" dnat to 172.16.42.2:9222
         tcp dport 9222 iifname "wlan0" dnat to 172.16.42.2:9222
     }

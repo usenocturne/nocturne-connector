@@ -25,6 +25,12 @@ allow-hotplug usb0
 iface usb0 inet static
     address 172.16.42.1
     netmask 255.255.255.0
+
+auto eth1
+allow-hotplug eth1
+iface eth1 inet static
+    address 172.16.42.1
+    netmask 255.255.255.0
 EOF
 
 cp "$ROOTFS_PATH"/etc/network/interfaces.alpine-builder "$DATAFS_PATH"/etc/network/interfaces
