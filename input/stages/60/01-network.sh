@@ -1,6 +1,6 @@
 #!/bin/sh
 
-chroot_exec apk add wireless-tools wpa_supplicant wpa_supplicant-openrc nftables dropbear-dbclient
+chroot_exec apk add wireless-tools wpa_supplicant wpa_supplicant-openrc nftables dropbear-dbclient eudev udev-init-scripts
 
 sed -i 's|default_conf=/etc/wpa_supplicant/wpa_supplicant.conf|default_conf=/data/etc/wpa_supplicant/wpa_supplicant.conf|' "$ROOTFS_PATH"/etc/init.d/wpa_supplicant
 mkdir -p "$DATAFS_PATH"/etc/wpa_supplicant
@@ -12,6 +12,10 @@ EOF
 chroot_exec rc-update add wpa_supplicant boot
 chroot_exec rc-update add wpa_cli boot
 chroot_exec rc-update add nftables boot
+chroot_exec rc-update add udev sysinit
+chroot_exec rc-update add udev-trigger sysinit
+chroot_exec rc-update add udev-settle sysinit
+chroot_exec rc-update add udev-postmount default
 
 echo "brcmfmac" >> "$ROOTFS_PATH"/etc/modules
 
@@ -25,12 +29,6 @@ allow-hotplug usb0
 iface usb0 inet static
     address 172.16.42.1
     netmask 255.255.255.0
-
-auto eth1
-allow-hotplug eth1
-iface eth1 inet static
-    address 172.16.42.1
-    netmask 255.255.255.0
 EOF
 
 cp "$ROOTFS_PATH"/etc/network/interfaces.alpine-builder "$DATAFS_PATH"/etc/network/interfaces
@@ -42,3 +40,5 @@ echo "172.16.42.2 superbird" >> "$ROOTFS_PATH"/etc/hosts
 
 rm -f "$ROOTFS_PATH"/etc/nftables.nft
 cp "$INPUT_PATH"/nftables.nft "$ROOTFS_PATH"/etc/nftables.nft
+
+echo "SUBSYSTEM==\"net\", ATTRS{idVendor}==\"0525\", ATTRS{idProduct}==\"a4a1\", NAME=\"usb0\"" > "$ROOTFS_PATH"/usr/lib/udev/rules.d/carthing.rules

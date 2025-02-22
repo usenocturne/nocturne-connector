@@ -60,7 +60,7 @@ func main() {
 	ctx := context.TODO()
 
 	res, _ := ctrl.SendRequest(ctx, "PING")
-	if res != "PONG\n" {
+	if err != nil || res != "PONG\n" {
 		fmt.Printf("Failed to ping wpa_supplicant control interface: %s\n", res)
 		os.Exit(1)
 	}
@@ -243,7 +243,7 @@ func main() {
 		}
 
 		res, err := ctrl.SendRequest(ctx, "SCAN")
-		if res != "OK\n" {
+		if err != nil || res != "OK\n" {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send scan command: " + err.Error()})
 			return
@@ -323,7 +323,7 @@ func main() {
 		networkId := strings.TrimSpace(res)
 
 		res, err = ctrl.SendRequest(ctx, fmt.Sprintf("SET_NETWORK %s ssid \"%s\"", networkId, requestData.SSID))
-		if res != "OK\n" {
+		if err != nil || res != "OK\n" {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network SSID command: " + err.Error()})
 			return
@@ -331,14 +331,14 @@ func main() {
 
 		if requestData.PSK == "" {
 			res, err = ctrl.SendRequest(ctx, fmt.Sprintf("SET_NETWORK %s key_mgmt NONE", networkId))
-			if res != "OK\n" {
+			if err != nil || res != "OK\n" {
 				w.WriteHeader(http.StatusInternalServerError)
 				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network key_mgmt command: " + err.Error()})
 				return
 			}
 		} else {
 			res, err = ctrl.SendRequest(ctx, fmt.Sprintf("SET_NETWORK %s psk \"%s\"", networkId, requestData.PSK))
-			if res != "OK\n" {
+			if err != nil || res != "OK\n" {
 				w.WriteHeader(http.StatusInternalServerError)
 				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network SSID command: " + err.Error()})
 				return
@@ -346,7 +346,7 @@ func main() {
 		}
 
 		res, err = ctrl.SendRequest(ctx, "SAVE_CONFIG")
-		if res != "OK\n" {
+		if err != nil || res != "OK\n" {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to save config: " + err.Error()})
 			return
@@ -376,14 +376,14 @@ func main() {
 		networkId := strings.TrimSpace(id)
 
 		res, err := ctrl.SendRequest(ctx, fmt.Sprintf("SELECT_NETWORK %s", networkId))
-		if res != "OK\n" {
+		if err != nil || res != "OK\n" {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send select network command: " + err.Error()})
 			return
 		}
 
 		res, err = ctrl.SendRequest(ctx, "SAVE_CONFIG")
-		if res != "OK\n" {
+		if err != nil || res != "OK\n" {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to save config: " + err.Error()})
 			return
@@ -413,14 +413,14 @@ func main() {
 		networkId := strings.TrimSpace(id)
 
 		res, err := ctrl.SendRequest(ctx, fmt.Sprintf("REMOVE_NETWORK %s", networkId))
-		if res != "OK\n" {
+		if err != nil || res != "OK\n" {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send remove network command: " + err.Error()})
 			return
 		}
 
 		res, err = ctrl.SendRequest(ctx, "SAVE_CONFIG")
-		if res != "OK\n" {
+		if err != nil || res != "OK\n" {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to save config: " + err.Error()})
 			return
