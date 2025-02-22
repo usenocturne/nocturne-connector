@@ -1,6 +1,6 @@
 #!/bin/sh
 
-chroot_exec apk add wireless-tools wpa_supplicant wpa_supplicant-openrc nftables
+chroot_exec apk add wireless-tools wpa_supplicant wpa_supplicant-openrc nftables dropbear-dbclient
 
 sed -i 's|default_conf=/etc/wpa_supplicant/wpa_supplicant.conf|default_conf=/data/etc/wpa_supplicant/wpa_supplicant.conf|' "$ROOTFS_PATH"/etc/init.d/wpa_supplicant
 mkdir -p "$DATAFS_PATH"/etc/wpa_supplicant

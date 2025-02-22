@@ -8,6 +8,6 @@ command_args=""
 command_background=true
 
 depend() {
-  use logger dns
-  after firewall
+  use logger
+  after wpa_supplicant
 }
