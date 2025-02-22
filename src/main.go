@@ -32,10 +32,29 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func main() {
-	ctrl, err := wpa_supplicant.Connect("/run/wpa_supplicant/wlan0")
+	err := OpenrcStart("wpa_supplicant")
 	if err != nil {
-		fmt.Printf("Failed to connect to wpa_supplicant: %s\n", err)
+		fmt.Printf("Failed to start wpa_supplicant: %s\n", err)
 		os.Exit(1)
+	}
+
+	var ctrl *wpa_supplicant.ControlInterface
+	for i := 0; i < 10; i++ {
+		ctrl, err = wpa_supplicant.Connect("/run/wpa_supplicant/wlan0")
+		if err == nil {
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	if ctrl == nil {
+		fmt.Printf("Failed to connect to wpa_supplicant after retries: %s\n", err)
+		os.Exit(1)
+	}
+
+	err = OpenrcStart("wpa_cli")
+	if err != nil {
+		fmt.Printf("Failed to start wpa_cli: %s\n", err)
 	}
 
 	ctx := context.TODO()

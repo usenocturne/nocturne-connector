@@ -9,5 +9,5 @@ command_background=true
 
 depend() {
   use logger
-  after wpa_supplicant
+  after networking
 }

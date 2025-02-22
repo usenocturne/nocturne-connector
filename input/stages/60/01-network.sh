@@ -9,8 +9,8 @@ ctrl_interface=/run/wpa_supplicant
 update_config=1
 EOF
 
-chroot_exec rc-update add wpa_supplicant default
-chroot_exec rc-update add wpa_cli default
+chroot_exec rc-update add wpa_supplicant boot
+chroot_exec rc-update add wpa_cli boot
 chroot_exec rc-update add nftables boot
 
 echo "brcmfmac" >> "$ROOTFS_PATH"/etc/modules

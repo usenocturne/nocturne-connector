@@ -59,3 +59,4 @@ You can set the active boot slot using the `ab_active` utility, or flash an imag
 
 # Credits
 - [gitlab.com/raspi-alpine/builder](https://gitlab.com/raspi-alpine/builder)
+- [kairos-io/kairos](https://github.com/kairos-io/kairos/blob/v1.6.0/pkg/machine/openrc/unit.go) (openrc package)
