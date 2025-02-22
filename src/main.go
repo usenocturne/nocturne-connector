@@ -421,7 +421,7 @@ func main() {
 
 	log.Printf("Server starting on :%s", port)
 	//if err := http.ListenAndServe(":"+port, nil); err != nil {
-	if err := http.ListenAndServeTLS(":"+port, "cert.crt", "cert.key", nil); err != nil {
+	if err := http.ListenAndServeTLS(":"+port, "/etc/nocturne-connector/cert.crt", "/etc/nocturne-connector/cert.key", nil); err != nil {
 		log.Fatal(err)
 	}
 }
