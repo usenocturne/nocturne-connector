@@ -243,9 +243,13 @@ func main() {
 		}
 
 		res, err := ctrl.SendRequest(ctx, "SCAN")
-		if err != nil || res != "OK\n" {
+		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send scan command: " + err.Error()})
+			return
+		} else if res != "OK\n" {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send scan command: " + res})
 			return
 		}
 
@@ -323,32 +327,48 @@ func main() {
 		networkId := strings.TrimSpace(res)
 
 		res, err = ctrl.SendRequest(ctx, fmt.Sprintf("SET_NETWORK %s ssid \"%s\"", networkId, requestData.SSID))
-		if err != nil || res != "OK\n" {
+		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network SSID command: " + err.Error()})
+			return
+		} else if res != "OK\n" {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network SSID command: " + res})
 			return
 		}
 
 		if requestData.PSK == "" {
 			res, err = ctrl.SendRequest(ctx, fmt.Sprintf("SET_NETWORK %s key_mgmt NONE", networkId))
-			if err != nil || res != "OK\n" {
+			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
 				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network key_mgmt command: " + err.Error()})
+				return
+			} else if res != "OK\n" {
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network key_mgmt command: " + res})
 				return
 			}
 		} else {
 			res, err = ctrl.SendRequest(ctx, fmt.Sprintf("SET_NETWORK %s psk \"%s\"", networkId, requestData.PSK))
-			if err != nil || res != "OK\n" {
+			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
-				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network SSID command: " + err.Error()})
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network PSK command: " + err.Error()})
+				return
+			} else if res != "OK\n" {
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network PSK command: " + res})
 				return
 			}
 		}
 
 		res, err = ctrl.SendRequest(ctx, "SAVE_CONFIG")
-		if err != nil || res != "OK\n" {
+		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to save config: " + err.Error()})
+			return
+		} else if res != "OK\n" {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to save config: " + res})
 			return
 		}
 
@@ -376,9 +396,13 @@ func main() {
 		networkId := strings.TrimSpace(id)
 
 		res, err := ctrl.SendRequest(ctx, fmt.Sprintf("SELECT_NETWORK %s", networkId))
-		if err != nil || res != "OK\n" {
+		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send select network command: " + err.Error()})
+			return
+		} else if res != "OK\n" {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send select network command: " + res})
 			return
 		}
 
@@ -413,9 +437,13 @@ func main() {
 		networkId := strings.TrimSpace(id)
 
 		res, err := ctrl.SendRequest(ctx, fmt.Sprintf("REMOVE_NETWORK %s", networkId))
-		if err != nil || res != "OK\n" {
+		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send remove network command: " + err.Error()})
+			return
+		} else if res != "OK\n" {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send remove network command: " + res})
 			return
 		}
 
