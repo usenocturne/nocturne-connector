@@ -5,15 +5,39 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hdiniz/wpa_supplicant-go"
 	alpine_builder "gitlab.com/raspi-alpine/go-raspi-alpine"
 )
+
+var (
+	updateStatus    UpdateStatus
+	updateStatusMux sync.RWMutex
+)
+
+func setUpdateStatus(inProgress bool, stage string, err string) {
+	updateStatusMux.Lock()
+	defer updateStatusMux.Unlock()
+	updateStatus = UpdateStatus{
+		InProgress: inProgress,
+		Stage:      stage,
+		Error:      err,
+	}
+}
+
+func getUpdateStatus() UpdateStatus {
+	updateStatusMux.RLock()
+	defer updateStatusMux.RUnlock()
+	return updateStatus
+}
 
 func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -459,6 +483,155 @@ func main() {
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to encode JSON: " + err.Error()})
 			return
 		}
+	}))
+
+	// POST /update
+	http.HandleFunc("/update", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Method not allowed"})
+			return
+		}
+
+		var requestData UpdateRequest
+		if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Invalid request body: " + err.Error()})
+			return
+		}
+
+		status := getUpdateStatus()
+		if status.InProgress {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Update already in progress"})
+			return
+		}
+
+		go func() {
+			setUpdateStatus(true, "download", "")
+
+			tempDir, err := os.MkdirTemp("", "update-*")
+			if err != nil {
+				setUpdateStatus(false, "", fmt.Sprintf("Failed to create temp directory: %v", err))
+				return
+			}
+			defer os.RemoveAll(tempDir)
+
+			imgPath := filepath.Join(tempDir, "update.img.gz")
+			imgResp, err := http.Get(requestData.ImageURL)
+			if err != nil {
+				setUpdateStatus(false, "", fmt.Sprintf("Failed to download image: %v", err))
+				return
+			}
+			defer imgResp.Body.Close()
+
+			imgFile, err := os.Create(imgPath)
+			if err != nil {
+				setUpdateStatus(false, "", fmt.Sprintf("Failed to create image file: %v", err))
+				return
+			}
+			defer imgFile.Close()
+
+			contentLength := imgResp.ContentLength
+			progressReader := newProgressReader(imgResp.Body, contentLength, func(complete, total int64, speed float64) {
+				percent := float64(complete) / float64(total) * 100
+				broadcastProgress(ProgressMessage{
+					Type:          "progress",
+					Stage:         "download",
+					BytesComplete: complete,
+					BytesTotal:    total,
+					Speed:         float64(int(speed*10)) / 10,
+					Percent:       float64(int(percent*10)) / 10,
+				})
+			})
+
+			if _, err := io.Copy(imgFile, progressReader); err != nil {
+				setUpdateStatus(false, "", fmt.Sprintf("Failed to save image file: %v", err))
+				return
+			}
+
+			sumResp, err := http.Get(requestData.SumURL)
+			if err != nil {
+				setUpdateStatus(false, "", fmt.Sprintf("Failed to download checksum: %v", err))
+				return
+			}
+			defer sumResp.Body.Close()
+
+			sumBytes, err := io.ReadAll(sumResp.Body)
+			if err != nil {
+				setUpdateStatus(false, "", fmt.Sprintf("Failed to read checksum: %v", err))
+				return
+			}
+
+			sumParts := strings.Fields(string(sumBytes))
+			if len(sumParts) != 2 {
+				setUpdateStatus(false, "", "Invalid checksum format")
+				return
+			}
+			sum := sumParts[0]
+
+			setUpdateStatus(true, "flash", "")
+			if err := UpdateSystem(imgPath, sum, broadcastProgress); err != nil {
+				setUpdateStatus(false, "", fmt.Sprintf("Failed to update system: %v", err))
+				broadcastCompletion(CompletionMessage{
+					Type:    "completion",
+					Stage:   "flash",
+					Success: false,
+					Error:   fmt.Sprintf("Failed to update system: %v", err),
+				})
+				return
+			}
+
+			setUpdateStatus(false, "", "")
+			broadcastCompletion(CompletionMessage{
+				Type:    "completion",
+				Stage:   "flash",
+				Success: true,
+			})
+		}()
+
+		if err := json.NewEncoder(w).Encode(OKResponse{Status: "success"}); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to encode JSON: " + err.Error()})
+			return
+		}
+	}))
+
+	// GET /update/status
+	http.HandleFunc("/update/status", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Method not allowed"})
+			return
+		}
+
+		if err := json.NewEncoder(w).Encode(getUpdateStatus()); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to encode JSON: " + err.Error()})
+			return
+		}
+	}))
+
+	// POST /power/reboot
+	http.HandleFunc("/power/reboot", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Method not allowed"})
+			return
+		}
+
+		if err := json.NewEncoder(w).Encode(OKResponse{Status: "success"}); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to encode JSON: " + err.Error()})
+			return
+		}
+
+		go func() {
+			time.Sleep(1 * time.Second)
+			if _, err := runShell("reboot"); err != nil {
+				log.Printf("Failed to reboot: %v", err)
+			}
+		}()
 	}))
 
 	port := os.Getenv("PORT")

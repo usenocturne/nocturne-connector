@@ -24,3 +24,30 @@ type NetworkStatus struct {
 	WPAState       string `json:"wpaState"`
 	IPAddress      string `json:"ipAddress"`
 }
+
+type UpdateRequest struct {
+	ImageURL string `json:"imageUrl"`
+	SumURL   string `json:"sumUrl"`
+}
+
+type ProgressMessage struct {
+	Type          string  `json:"type"`
+	Stage         string  `json:"stage"`
+	BytesComplete int64   `json:"bytesComplete"`
+	BytesTotal    int64   `json:"bytesTotal"`
+	Speed         float64 `json:"speed"`
+	Percent       float64 `json:"percent"`
+}
+
+type UpdateStatus struct {
+	InProgress bool   `json:"inProgress"`
+	Stage      string `json:"stage"`
+	Error      string `json:"error,omitempty"`
+}
+
+type CompletionMessage struct {
+	Type    string `json:"type"`
+	Stage   string `json:"stage"`
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
