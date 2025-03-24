@@ -43,7 +43,7 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 		if r.Method == "OPTIONS" {
@@ -350,49 +350,51 @@ func main() {
 
 		networkId := strings.TrimSpace(res)
 
+		cleanupNetwork := func(errMsg string) {
+			cleanupRes, cleanupErr := ctrl.SendRequest(ctx, fmt.Sprintf("REMOVE_NETWORK %s", networkId))
+			if cleanupErr != nil || cleanupRes != "OK\n" {
+				log.Printf("Failed to clean up network %s after error: %v, %s", networkId, cleanupErr, cleanupRes)
+			}
+
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: errMsg})
+		}
+
 		res, err = ctrl.SendRequest(ctx, fmt.Sprintf("SET_NETWORK %s ssid \"%s\"", networkId, requestData.SSID))
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network SSID command: " + err.Error()})
+			cleanupNetwork("Failed to send set network SSID command: " + err.Error())
 			return
 		} else if res != "OK\n" {
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network SSID command: " + res})
+			cleanupNetwork("Failed to send set network SSID command: " + res)
 			return
 		}
 
 		if requestData.PSK == "" {
 			res, err = ctrl.SendRequest(ctx, fmt.Sprintf("SET_NETWORK %s key_mgmt NONE", networkId))
 			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network key_mgmt command: " + err.Error()})
+				cleanupNetwork("Failed to send set network key_mgmt command: " + err.Error())
 				return
 			} else if res != "OK\n" {
-				w.WriteHeader(http.StatusInternalServerError)
-				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network key_mgmt command: " + res})
+				cleanupNetwork("Failed to send set network key_mgmt command: " + res)
 				return
 			}
 		} else {
 			res, err = ctrl.SendRequest(ctx, fmt.Sprintf("SET_NETWORK %s psk \"%s\"", networkId, requestData.PSK))
 			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network PSK command: " + err.Error()})
+				cleanupNetwork("Failed to send set network PSK command: " + err.Error())
 				return
 			} else if res != "OK\n" {
-				w.WriteHeader(http.StatusInternalServerError)
-				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send set network PSK command: " + res})
+				cleanupNetwork("Failed to send set network PSK command: " + res)
 				return
 			}
 		}
 
 		res, err = ctrl.SendRequest(ctx, "SAVE_CONFIG")
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to save config: " + err.Error()})
+			cleanupNetwork("Failed to save config: " + err.Error())
 			return
 		} else if res != "OK\n" {
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to save config: " + res})
+			cleanupNetwork("Failed to save config: " + res)
 			return
 		}
 
@@ -640,8 +642,8 @@ func main() {
 	}
 
 	log.Printf("Server starting on :%s", port)
-	//if err := http.ListenAndServe(":"+port, nil); err != nil {
-	if err := http.ListenAndServeTLS(":"+port, "/etc/nocturne-connector/cert.crt", "/etc/nocturne-connector/cert.key", nil); err != nil {
+	//if err := http.ListenAndServeTLS(":"+port, "/etc/nocturne-connector/cert.crt", "/etc/nocturne-connector/cert.key", nil); err != nil {
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatal(err)
 	}
 }
