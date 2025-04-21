@@ -421,7 +421,18 @@ func main() {
 		}
 		networkId := strings.TrimSpace(id)
 
-		res, err := ctrl.SendRequest(ctx, fmt.Sprintf("SELECT_NETWORK %s", networkId))
+		res, err := ctrl.SendRequest(ctx, fmt.Sprintf("ENABLE_NETWORK %s", networkId))
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send enable network command: " + err.Error()})
+			return
+		} else if res != "OK\n" {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send enable network command: " + res})
+			return
+		}
+
+		res, err = ctrl.SendRequest(ctx, fmt.Sprintf("SELECT_NETWORK %s", networkId))
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send select network command: " + err.Error()})
