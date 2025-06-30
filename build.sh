@@ -45,6 +45,7 @@ IMAGE_PATH="${WORK_PATH}/img"
 export OUTPUT_PATH="${SAVED_PWD}/output"
 export CACHE_PATH="${SAVED_PWD}/cache"
 
+export CONNECTOR_PATH="${SAVED_PWD}/src"
 export SCRIPTS_PATH="${SAVED_PWD}/scripts"
 export HELPERS_PATH="${SAVED_PWD}/scripts/build-helpers"
 export M4_PATH="${SAVED_PWD}/m4"
@@ -125,21 +126,21 @@ run_stage_scripts() {
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 
 if [ -n "$ARMV6" ]; then
-    export XBPS_ARCH="armv6l"
+  export XBPS_ARCH="armv6l"
 
-    for _stage in ${STAGES}; do
-        run_stage_scripts "$_stage"
-    done
-    
-    color_echo ">> Finished armv6 <<"
+  for _stage in ${STAGES}; do
+    run_stage_scripts "$_stage"
+  done
+  
+  color_echo ">> Finished armv6 <<"
 fi
 
 if [ -n "$ARMV8" ]; then
-    export XBPS_ARCH="aarch64"
+  export XBPS_ARCH="aarch64"
 
-    for _stage in ${STAGES}; do
-        run_stage_scripts "$_stage"
-    done
+  for _stage in ${STAGES}; do
+    run_stage_scripts "$_stage"
+  done
 
-    color_echo ">> Finished armv8 <<"
+  color_echo ">> Finished armv8 <<"
 fi

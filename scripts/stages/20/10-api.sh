@@ -1,6 +1,6 @@
 #!/bin/sh
 
-cp "$RES_PATH"/bins/connector-api "$ROOTFS_PATH"/usr/sbin/connector-api
+cp "$CONNECTOR_PATH"/connector-api "$ROOTFS_PATH"/usr/sbin/connector-api
 cp -a "$SCRIPTS_PATH"/services/connector-api "$ROOTFS_PATH"/etc/sv/
 
 mkdir "$ROOTFS_PATH"/etc/nocturne-connector
