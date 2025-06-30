@@ -1,0 +1,11 @@
+Welcome to Nocturne Connector OS!
+
+If you are trying to set up the Connector, please refer
+to the GitHub: https://github.com/usenocturne/nocturne-connector
+
+If you are experienced and you want to change something, you may
+remount the rootfs as read-write with: mount -o remount,rw /
+
+You can set the active boot slot using the ab_active utility,
+or flash an image to the inactive slot using the ab_flash utility.
+

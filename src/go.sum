@@ -1,0 +1,8 @@
+github.com/GehirnInc/crypt v0.0.0-20190301055215-6c0105aabd46 h1:rs0kDBt2zF4/CM9rO5/iH+U22jnTygPlqWgX55Ufcxg=
+github.com/GehirnInc/crypt v0.0.0-20190301055215-6c0105aabd46/go.mod h1:kC29dT1vFpj7py2OvG1khBdQpo3kInWP+6QipLbdngo=
+github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
+github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
+github.com/hdiniz/wpa_supplicant-go v0.0.1 h1:Kzc4aL4DLxgbUMiflvSrzSjU1cYkb9ZRFnk3/lxz9x4=
+github.com/hdiniz/wpa_supplicant-go v0.0.1/go.mod h1:8DAkI0x7ozPpt8o8Kqt7VVVMOdo+v/VxgC0qRkfQ4tc=
+gitlab.com/raspi-alpine/go-raspi-alpine v0.0.0-20211225112919-2293efba9440 h1:BO6Gv7dk9hfDQDbsWVtwg5FN+PN9ZW/1rVLfPtPanAY=
+gitlab.com/raspi-alpine/go-raspi-alpine v0.0.0-20211225112919-2293efba9440/go.mod h1:tj6pVh/BffpR2SX45BtF6WlCLCgVTPZRA8iW6GpP+FA=
