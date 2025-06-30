@@ -1,6 +1,7 @@
-/dev/root       /           ext4     defaults,ro         0 1
-LABEL=BOOT      /uboot      vfat     defaults,ro         0 2
-LABEL=data      /data       ext4     defaults            0 2
+/dev/mmcblk0p1      /uboot      vfat    defaults,ro          0 2
+/dev/mmcblk0p2      /           ext4     defaults,ro         0 1
+/dev/mmcblk0p3      /           ext4     defaults,ro         0 1
+/dev/mmcblk0p4      /data       ext4     defaults            0 2
 
 /data/root      /root       none     defaults,bind       0 0
 /data/var/lib   /var/lib    none     defaults,bind       0 0
@@ -12,4 +13,3 @@ devpts          /dev/pts    devpts   gid=4,mode=620      0 0
 tmpfs           /dev/shm    tmpfs    defaults            0 0
 tmpfs           /tmp        tmpfs    defaults            0 0
 tmpfs           /run        tmpfs    defaults            0 0
-tmpfs           /var/lock   tmpfs    defaults            0 0

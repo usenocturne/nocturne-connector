@@ -23,5 +23,3 @@ esac
 mkimage -A "$A" -T script -C none -n "Boot script" -d "$RES_PATH"/config/boot.cmd "$BOOTFS_PATH"/boot.scr
 
 eval m4 -D xARCH="$XBPS_ARCH" "$RES_PATH"/m4/config.txt.m4 > "$BOOTFS_PATH"/config.txt
-
-echo "console=serial0,115200 console=tty1 root=/dev/root rootfstype=ext4 fsck.repair=yes ro rootwait quiet" > "$BOOTFS_PATH"/cmdline.txt
