@@ -35,7 +35,7 @@ echo "172.16.42.2 superbird" >> "$ROOTFS_PATH"/etc/hosts
 rm -f "$ROOTFS_PATH"/etc/nftables.nft
 cp "$INPUT_PATH"/nftables.nft "$ROOTFS_PATH"/etc/nftables.nft
 
-echo "SUBSYSTEM==\"net\", ATTRS{idVendor}==\"0525\", ATTRS{idProduct}==\"a4a1\", NAME=\"usb0\"" > "$ROOTFS_PATH"/usr/lib/udev/rules.d/carthing.rules
+echo "SUBSYSTEM==\"net\", ATTRS{idVendor}==\"0000\", ATTRS{idProduct}==\"1014\", NAME=\"usb0\"" > "$ROOTFS_PATH"/usr/lib/udev/rules.d/carthing.rules
 
 cat > "$ROOTFS_PATH"/etc/NetworkManager/NetworkManager.conf << EOF
 [main]
