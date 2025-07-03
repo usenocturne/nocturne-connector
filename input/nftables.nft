@@ -14,7 +14,7 @@ table ip filter {
         iifname "usb0" oifname "wlan0" ip saddr 172.16.42.0/24 ct state established,related accept
 
         ip daddr 172.16.42.2 tcp dport 22 ct state established,related,new accept
-        ip daddr 172.16.42.2 tcp dport 9222 ct state established,related,new accept
+        ip daddr 172.16.42.2 tcp dport 2222 ct state established,related,new accept
     }
 
     chain output {
@@ -29,8 +29,8 @@ table ip nat {
         tcp dport 2022 iifname "eth0" dnat to 172.16.42.2:22
         tcp dport 2022 iifname "wlan0" dnat to 172.16.42.2:22
 
-        tcp dport 9222 iifname "eth0" dnat to 172.16.42.2:9222
-        tcp dport 9222 iifname "wlan0" dnat to 172.16.42.2:9222
+        tcp dport 2222 iifname "eth0" dnat to 172.16.42.2:2222
+        tcp dport 2222 iifname "wlan0" dnat to 172.16.42.2:2222
     }
 
     chain postrouting {
