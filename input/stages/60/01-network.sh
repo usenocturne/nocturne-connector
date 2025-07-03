@@ -60,3 +60,4 @@ chmod 600 "$ROOTFS_PATH"/etc/NetworkManager/system-connections/usb0.nmconnection
 echo "ENV{DEVTYPE}==\"gadget\", ENV{NM_UNMANAGED}=\"0\"" > "$ROOTFS_PATH"/usr/lib/udev/rules.d/98-network.rules
 
 chroot_exec rc-update add networkmanager default
+chroot_exec rc-update add sysctl sysinit
