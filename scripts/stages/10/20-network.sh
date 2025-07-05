@@ -1,14 +1,22 @@
 #!/bin/sh
 
-xbps-install -r "$ROOTFS_PATH" -y NetworkManager dbus nftables runit-nftables
+xbps-install -r "$ROOTFS_PATH" -y NetworkManager dbus nftables runit-nftables wpa_supplicant
+
+mkdir -p "$DATAFS_PATH"/etc/wpa_supplicant
+cat > "$DATAFS_PATH"/etc/wpa_supplicant/wpa_supplicant.conf <<EOF
+ctrl_interface=/run/wpa_supplicant
+update_config=1
+EOF
+
+cp -a "$SCRIPTS_PATH"/services/dhcpcd-wlan0 "$ROOTFS_PATH"/etc/sv/
 
 echo "net.ipv4.ip_forward=1" >> "$ROOTFS_PATH"/etc/sysctl.conf
 echo "net.ipv6.conf.all.forwarding=1" >> "$ROOTFS_PATH"/etc/sysctl.conf
 
 echo "172.16.42.2 superbird" >> "$ROOTFS_PATH"/etc/hosts
 
-rm -f "$ROOTFS_PATH"/etc/nftables.nft
-cp "$RES_PATH"/config/nftables.nft "$ROOTFS_PATH"/etc/nftables.nft
+rm -f "$ROOTFS_PATH"/etc/nftables.conf
+cp "$RES_PATH"/config/nftables.conf "$ROOTFS_PATH"/etc/nftables.conf
 
 echo "SUBSYSTEM==\"net\", ATTRS{idVendor}==\"0000\", ATTRS{idProduct}==\"1014\", NAME=\"usb0\"" > "$ROOTFS_PATH"/usr/lib/udev/rules.d/carthing.rules
 
@@ -37,4 +45,4 @@ echo "ENV{DEVTYPE}==\"gadget\", ENV{NM_UNMANAGED}=\"0\"" > "$ROOTFS_PATH"/usr/li
 
 rm -f "$ROOTFS_PATH"/etc/runit/runsvdir/default/dhcpcd
 
-DEFAULT_SERVICES="${DEFAULT_SERVICES} NetworkManager dbus"
+DEFAULT_SERVICES="${DEFAULT_SERVICES} NetworkManager dbus wpa_supplicant dhcpcd-wlan0 dhcpcd-eth0 nftables"

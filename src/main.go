@@ -56,7 +56,7 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func main() {
-	err := OpenrcStart("wpa_supplicant")
+	err := RunitStart("wpa_supplicant")
 	if err != nil {
 		fmt.Printf("Failed to start wpa_supplicant: %s\n", err)
 		os.Exit(1)
@@ -74,11 +74,6 @@ func main() {
 	if ctrl == nil {
 		fmt.Printf("Failed to connect to wpa_supplicant after retries: %s\n", err)
 		os.Exit(1)
-	}
-
-	err = OpenrcStart("wpa_cli")
-	if err != nil {
-		fmt.Printf("Failed to start wpa_cli: %s\n", err)
 	}
 
 	ctx := context.TODO()
@@ -141,13 +136,24 @@ func main() {
 		}
 		version := strings.TrimSpace(string(versionBytes))
 
-		osVersionBytes, err := os.ReadFile("/etc/alpine-release")
+		osVersionBytes, err := os.ReadFile("/etc/os-release")
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to read alpine-release file: " + err.Error()})
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to read os-release file: " + err.Error()})
 			return
 		}
-		osVersion := strings.TrimSpace(string(osVersionBytes))
+		
+		osVersion := "Unknown"
+		lines := strings.Split(string(osVersionBytes), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "PRETTY_NAME=") {
+				osVersion = strings.Trim(strings.TrimPrefix(line, "PRETTY_NAME="), "\"")
+				break
+			} else if strings.HasPrefix(line, "NAME=") && osVersion == "Unknown" {
+				osVersion = strings.Trim(strings.TrimPrefix(line, "NAME="), "\"")
+			}
+		}
 
 		uBootActive := alpine_builder.UBootActive()
 		bootSlot := "unknown"

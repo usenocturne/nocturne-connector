@@ -60,8 +60,8 @@ func runShell(command string) (string, error) {
 }
 
 // Adapted from: https://github.com/kairos-io/kairos/blob/v1.6.0/pkg/machine/openrc/unit.go#L75
-func OpenrcStart(service string) error {
-	out, err := runShell(fmt.Sprintf("/etc/init.d/%s start", service))
+func RunitStart(service string) error {
+	out, err := runShell(fmt.Sprintf("sv start %s", service))
 	fmt.Printf("%s\n", out)
 	if err != nil {
 		return fmt.Errorf("%s (%w)", out, err)
@@ -69,18 +69,18 @@ func OpenrcStart(service string) error {
 	return nil
 }
 
-// Adapted from: https://github.com/kairos-io/kairos/blob/v1.6.0/pkg/machine/openrc/unit.go#L83
-func OpenrcRestart(service string) error {
-	out, err := runShell(fmt.Sprintf("/etc/init.d/%s restart", service))
+// Adapted from: https://github.com/kairos-io/kairos/blob/v1.6.0/pkg/machine/openrc/unit.go#L81
+func RunitRestart(service string) error {
+	out, err := runShell(fmt.Sprintf("sv restart %s", service))
 	if err != nil {
 		return fmt.Errorf("%s (%w)", out, err)
 	}
 	return nil
 }
 
-// Adapted from: https://github.com/kairos-io/kairos/blob/v1.6.0/pkg/machine/openrc/unit.go#L91
-func OpenrcEnable(service string, runlevel string) error {
-	_, err := runShell(fmt.Sprintf("ln -sf /etc/init.d/%s /etc/runlevels/default/%s", service, runlevel))
+// Adapted from: https://github.com/kairos-io/kairos/blob/v1.6.0/pkg/machine/openrc/unit.go#L87
+func RunitEnable(service string) error {
+	_, err := runShell(fmt.Sprintf("ln -sf /etc/sv/%s /var/service/", service))
 	return err
 }
 
