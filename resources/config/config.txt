@@ -1,0 +1,13 @@
+disable_splash=1
+boot_delay=0
+
+gpu_mem=16
+gpu_mem_256=64
+
+kernel=u-boot_rpi-64.bin
+
+[all]
+enable_uart=1
+
+arm_64bit=1
+enable_gic=1

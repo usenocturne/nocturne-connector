@@ -37,7 +37,6 @@
 
 | Board             | armhf | aarch64 |
 | ----------------- | :---: | :-----: |
-| Pi Zero W         |   ✅   |         |
 | Pi 3, Pi Zero W 2 |       |    ✅    |
 | Pi 4              |       |    ✅    |
 | Pi 5              |       |    ✅    |

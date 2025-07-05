@@ -11,15 +11,6 @@ chmod +x "$ROOTFS_PATH"/usr/sbin/uboot_tool
 
 cp "$WORK_PATH"/uboot/* "$BOOTFS_PATH"/
 
-case "$XBPS_ARCH" in
-  aarch64)
-    A=arm64
-    ;;
-  *)
-    A=arm
-    ;;
-esac
+mkimage -A arm64 -T script -C none -n "Boot script" -d "$RES_PATH"/config/boot.cmd "$BOOTFS_PATH"/boot.scr
 
-mkimage -A "$A" -T script -C none -n "Boot script" -d "$RES_PATH"/config/boot.cmd "$BOOTFS_PATH"/boot.scr
-
-eval m4 -D xARCH="$XBPS_ARCH" "$RES_PATH"/m4/config.txt.m4 > "$BOOTFS_PATH"/config.txt
+cp "$RES_PATH"/config/config.txt "$BOOTFS_PATH"/config.txt

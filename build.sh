@@ -54,21 +54,7 @@ DEF_STAGE_PATH="${SAVED_PWD}/scripts/stages"
 
 mkdir -p "$IMAGE_PATH" "$BOOTFS_PATH" "$ROOTFS_PATH" "$DATAFS_PATH" "$OUTPUT_PATH" "$CACHE_PATH"
 
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-# Arguments
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-while getopts "68" OPTS; do
-  case ${OPTS} in
-    6) ARMV6="true" ;;
-    8) ARMV8="true" ;;
-    *) usage ;;
-  esac
-done
-
-if [ -z "$ARMV6" ] && [ -z "$ARMV8" ]; then
-  ARMV6="true"
-  ARMV8="true"
-fi
+export XBPS_ARCH="aarch64"
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Functions
@@ -125,22 +111,8 @@ run_stage_scripts() {
 # Stage 40 - Create images
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 
-if [ -n "$ARMV6" ]; then
-  export XBPS_ARCH="armv6l"
+for _stage in ${STAGES}; do
+  run_stage_scripts "$_stage"
+done
 
-  for _stage in ${STAGES}; do
-    run_stage_scripts "$_stage"
-  done
-  
-  color_echo ">> Finished armv6 <<"
-fi
-
-if [ -n "$ARMV8" ]; then
-  export XBPS_ARCH="aarch64"
-
-  for _stage in ${STAGES}; do
-    run_stage_scripts "$_stage"
-  done
-
-  color_echo ">> Finished armv8 <<"
-fi
+color_echo ">> Finished <<"
