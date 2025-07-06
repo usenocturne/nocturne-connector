@@ -1,5 +1,7 @@
 #!/bin/sh
 
+xbps-install -r "$ROOTFS_PATH" -y openssh
+
 rm -f "$ROOTFS_PATH"/etc/motd "$ROOTFS_PATH"/etc/fstab
 cp "$RES_PATH"/config/motd "$ROOTFS_PATH"/etc/motd
 cp "$RES_PATH"/config/fstab "$ROOTFS_PATH"/etc/fstab

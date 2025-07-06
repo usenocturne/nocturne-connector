@@ -45,4 +45,4 @@ echo "ENV{DEVTYPE}==\"gadget\", ENV{NM_UNMANAGED}=\"0\"" > "$ROOTFS_PATH"/usr/li
 
 rm -f "$ROOTFS_PATH"/etc/runit/runsvdir/default/dhcpcd
 
-DEFAULT_SERVICES="${DEFAULT_SERVICES} NetworkManager dbus wpa_supplicant dhcpcd-wlan0 dhcpcd-eth0 nftables"
+DEFAULT_SERVICES="${DEFAULT_SERVICES} NetworkManager dbus wpa_supplicant dhcpcd-wlan0 nftables"
