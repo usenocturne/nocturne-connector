@@ -28,7 +28,7 @@ set -e
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Static config
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-REQUIRED_CMDS=(curl zip unzip genimage mkpasswd mkimage mkdosfs mcopy fatresize)
+REQUIRED_CMDS=(curl zip unzip genimage mkpasswd)
 for cmd in "${REQUIRED_CMDS[@]}"; do
   if ! command -v "$cmd" > /dev/null 2>&1; then
     echo "$cmd is required to run this script."
@@ -39,34 +39,21 @@ done
 SAVED_PWD="$(pwd)"
 
 WORK_PATH=$(mktemp -d)
-export BOOTFS_PATH="${WORK_PATH}/bootfs"
 export ROOTFS_PATH="${WORK_PATH}/rootfs"
-export DATAFS_PATH="${WORK_PATH}/datafs"
-IMAGE_PATH="${WORK_PATH}/img"
 export OUTPUT_PATH="${SAVED_PWD}/output"
 export CACHE_PATH="${SAVED_PWD}/cache"
 
 export CONNECTOR_PATH="${SAVED_PWD}/src"
 export SCRIPTS_PATH="${SAVED_PWD}/scripts"
 export HELPERS_PATH="${SAVED_PWD}/scripts/build-helpers"
-export M4_PATH="${SAVED_PWD}/m4"
 export RES_PATH="${SAVED_PWD}/resources"
 DEF_STAGE_PATH="${SAVED_PWD}/scripts/stages"
 
-mkdir -p "$IMAGE_PATH" "$BOOTFS_PATH" "$ROOTFS_PATH" "$DATAFS_PATH" "$OUTPUT_PATH" "$CACHE_PATH"
+mkdir -p "$ROOTFS_PATH" "$OUTPUT_PATH" "$CACHE_PATH"
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Functions
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-make_image() {
-  [ -d /tmp/genimage ] && rm -rf /tmp/genimage
-  genimage --rootpath "$1" \
-    --tmppath /tmp/genimage \
-    --inputpath "${IMAGE_PATH}" \
-    --outputpath "${IMAGE_PATH}" \
-    --config "$2"
-}
-
 color_echo() {
   ColourOff='\033[0m'
   Prefix='\033[0;'

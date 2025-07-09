@@ -24,35 +24,14 @@
 
 - Raspberry Pi with networking
   - Pi 1 and 2 are not supported due to lack of onboard Wi-Fi
+  - Pi Zero 1 (W) is not supported due to the old architecture
 - Working Wi-Fi network
-- 8GB or larger micro-SD card
 - Car Thing with Nocturne 3.0.0 or later installed
 
 ## Usage
 
-1. Flash the correct image (see table below) with Raspberry Pi Imager (recommended) or any other img flasher
-2. Plug your Car Thing into a USB port (USB3/blue ports recommended for more power)
-3. Plug your Pi into power
-4. On the No Internet/Connection Lost screen on Nocturne, press the button underneath the message to log into your Wi-Fi network
-
-| Board             | armhf | aarch64 |
-| ----------------- | :---: | :-----: |
-| Pi 3, Pi Zero W 2 |       |    ✅    |
-| Pi 4              |       |    ✅    |
-| Pi 5              |       |    ✅    |
-
-
-## Updating
-
-Nocturne will alert you when Connector has an update. Updates are small (under 150 MB compressed) and flash quickly.
-
-Connector images use an A/B partition scheme, which means that updates will be flashed to an inactive boot slot. If an update fails, your Pi will revert back to the old boot slot and Connector will continue operating as normal.
-
-If you do not want to update through Nocturne, you can:
-
-- Reflash the SD card with a PC (loses saved Wi-Fi networks)
-- Use Connector API to POST /update (Advanced, see `src/main.go` for reference)
-- Use `pv`/`cat` and `ssh` to copy over the update bundle and manually run `ab_flash` (Advanced)
+1. Plug your Car Thing into a USB 3 port (if applicable) on your Raspberry Pi
+2. Remove any SD cards and power the Raspberry Pi
 
 ## Donate
 
@@ -64,26 +43,27 @@ All donations are split between the four members of the Nocturne team, and go to
 
 ## Building
 
-Docker is required. Use `./build.sh` to build an image.
+`curl`, `zip/unzip`, `genimage`, and `mkpasswd` binaries are required.
+
+If you are on an architecture other than arm64, qemu-user-static (+ binfmt, or use `docker run --rm --privileged multiarch/qemu-user-static --reset -p yes`) is required.
+
+Use the `Justfile`. `just run` will output an initramfs and boot image in `output`.
 
 ```
-Usage: build.sh [-i IMAGE] [-f|-7|-8] [-p]
-           -i is the docker image to use for the build
-           -p pulls newest version of the image before running
-           -f builds armhf section
-           -7 builds armv7 section
-           -8 builds armv8 (arm64) section
-
-           if -f -7 or -8 is not used all sections are built
+$ just -l
+Available recipes:
+  connector-api
+  lint
+  run
 ```
 
 ## Tinkering (Advanced)
 
-SSH is open on port 22. Root password is `alpine`.
+SSH is open on port 22. Root password is `nocturne`.
 
 You may remount the rootfs as read-write with `mount -o remount,rw /`
 
-You can set the active boot slot using the `ab_active` utility, or flash an image to the inactive slot using the `ab_flash` utility.
+Any changes to the rootfs are temporary as the OS is booted from RAM. Please update `/connector.img` on your Car Thing.
 
 ## Credits
 
@@ -100,7 +80,6 @@ This software was made possible only through the following individuals and open 
 
 ### API
 
-- [gitlab.com/raspi-alpine/go-raspi-alpine](https://gitlab.com/raspi-alpine/go-raspi-alpine)
 - [kairos-io/kairos](https://github.com/kairos-io/kairos/blob/v1.6.0/pkg/machine/openrc/unit.go) (openrc package)
 
 ## License

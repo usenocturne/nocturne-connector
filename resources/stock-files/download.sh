@@ -8,7 +8,7 @@ set -x
 WORK_PATH=$(mktemp -d)
 BOOT_MNT_PATH="$WORK_PATH/boot"
 ROOT_MNT_PATH="$WORK_PATH/root"
-EXTRACT_PATH="$(pwd)/extract"
+EXTRACT_PATH="$WORK_PATH/extract"
 OUTPUT_PATH="$(pwd)/output"
 
 LOOP_DEV=""
@@ -82,6 +82,9 @@ rm "$OUTPUT_PATH"/boot/initramfs* "$OUTPUT_PATH"/boot/issue.txt "$OUTPUT_PATH"/b
 mkdir -p "$OUTPUT_PATH"/root/lib/modules
 cp -r "$ROOT_MNT_PATH"/lib/modules/* "$OUTPUT_PATH"/root/lib/modules
 rm -rf "$OUTPUT_PATH"/root/lib/modules/*rpi-2712
+rm -rf "$OUTPUT_PATH"/root/lib/modules/*/kernel/{fs,sound,lib}
+rm -rf "$OUTPUT_PATH"/root/lib/modules/*/kernel/drivers/{ata,auxdisplay,accessibility,base,bcma,block,bluetooth,cdrom,clk,connector,gpu,hid,iio,input,i2c,leds,md,mfd,mmc,mtd,mux,nvmem,pinctrl,pps,rtc,scsi,spi,ssb,staging,uio,vhost,video,w1}
+rm -rf "$OUTPUT_PATH"/root/lib/modules/*/kernel/drivers/media/{cec,common,dvb-core,dvb-frontends,i2c,mc,pci,radio,rc,spi,test-drivers,tuners,v4l2-core}
 
 chown -R root:root "$OUTPUT_PATH"/*
 

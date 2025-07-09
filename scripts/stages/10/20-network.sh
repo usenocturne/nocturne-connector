@@ -2,10 +2,10 @@
 
 "$HELPERS_PATH"/chroot_exec.sh apk add wireless-tools wpa_supplicant wpa_supplicant-openrc nftables eudev udev-init-scripts networkmanager networkmanager-cli
 
-mkdir -p "$DATAFS_PATH"/etc/wpa_supplicant
-cat > "$DATAFS_PATH"/etc/wpa_supplicant/wpa_supplicant.conf <<EOF
+mkdir -p "$ROOTFS_PATH"/etc/wpa_supplicant
+cat > "$ROOTFS_PATH"/etc/wpa_supplicant/wpa_supplicant.conf <<EOF
 ctrl_interface=/run/wpa_supplicant
-update_config=1
+update_config=0
 EOF
 
 cat > "$ROOTFS_PATH"/etc/network/interfaces <<EOF
@@ -51,5 +51,5 @@ chmod 600 "$ROOTFS_PATH"/etc/NetworkManager/system-connections/usb0.nmconnection
 
 echo "ENV{DEVTYPE}==\"gadget\", ENV{NM_UNMANAGED}=\"0\"" > "$ROOTFS_PATH"/usr/lib/udev/rules.d/98-network.rules
 
-DEFAULT_SERVICES="${DEFAULT_SERVICES} wpa_supplicant wpa_cli nftables udev-postmount"
+DEFAULT_SERVICES="${DEFAULT_SERVICES} wpa_supplicant wpa_cli nftables udev-postmount networkmanager"
 SYSINIT_SERVICES="${SYSINIT_SERVICES} udev udev-trigger udev-settle"
