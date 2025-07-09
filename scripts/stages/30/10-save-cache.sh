@@ -1,7 +1,8 @@
 #!/bin/sh
 
-if [ -d "$ROOTFS_PATH"/var/cache/xbps ]; then
-  mkdir -p "$CACHE_PATH"
-  cp "$ROOTFS_PATH"/var/cache/xbps/* "$CACHE_PATH"/
-  rm -rf "$ROOTFS_PATH"/var/cache/xbps/*
+if [ -d "$ROOTFS_PATH"/etc/apk/cache ]; then
+  mkdir -p "$CACHE_PATH"/apk
+  cp "$ROOTFS_PATH"/etc/apk/cache/*.apk "$CACHE_PATH"/apk/
+  cp "$ROOTFS_PATH"/etc/apk/cache/*.gz "$CACHE_PATH"/apk/
+  rm -rf "$ROOTFS_PATH"/etc/apk/cache
 fi

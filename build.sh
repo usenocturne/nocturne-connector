@@ -9,25 +9,26 @@ set -e
 : "${UBOOT_PROJ_ID:="32838267"}"
 : "${UBOOT_TOOL_PROJ_ID:="33098050"}"
 
-: "${VOID_BUILD:="20250202"}"
+: "${ALPINE_BUILD:="3.21"}"
+: "${ALPINE_BUILD_PATCH:="3"}"
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # System config
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 : "${DEFAULT_HOSTNAME:="nocturne-connector"}"
 : "${DEFAULT_ROOT_PASSWORD:="nocturne"}"
-: "${DEFAULT_SERVICES:=""}"
 
-: "${SIZE_BOOT_FS:="128M"}"
-: "${SIZE_ROOT_FS:="1024M"}"
-: "${SIZE_DATA_FS:="512M"}"
+: "${SYSINIT_SERVICES:="devfs dmesg hwdrivers"}"
+: "${BOOT_SERVICES:="sysctl hostname bootmisc modules"}"
+: "${DEFAULT_SERVICES:=""}"
+: "${SHUTDOWN_SERVICES:="killprocs"}"
 
 : "${STAGES:="00 10 20 30 40"}"
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Static config
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-REQUIRED_CMDS=(curl zip unzip genimage m4 xbps-install mkpasswd mkimage mkdosfs mcopy)
+REQUIRED_CMDS=(curl zip unzip genimage mkpasswd mkimage mkdosfs mcopy fatresize)
 for cmd in "${REQUIRED_CMDS[@]}"; do
   if ! command -v "$cmd" > /dev/null 2>&1; then
     echo "$cmd is required to run this script."
@@ -53,8 +54,6 @@ export RES_PATH="${SAVED_PWD}/resources"
 DEF_STAGE_PATH="${SAVED_PWD}/scripts/stages"
 
 mkdir -p "$IMAGE_PATH" "$BOOTFS_PATH" "$ROOTFS_PATH" "$DATAFS_PATH" "$OUTPUT_PATH" "$CACHE_PATH"
-
-export XBPS_ARCH="aarch64"
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Functions
@@ -110,6 +109,11 @@ run_stage_scripts() {
 # Stage 30 - Cleanup
 # Stage 40 - Create images
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+
+if [ ! -d "$RES_PATH"/stock-files/output ]; then
+  color_echo "Please run 'cd resources/stock-files && sudo ./download.sh' first." -Red
+  exit 1
+fi
 
 for _stage in ${STAGES}; do
   run_stage_scripts "$_stage"

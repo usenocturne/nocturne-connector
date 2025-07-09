@@ -1,10 +1,17 @@
 #!/bin/sh
 
-for S in ${DEFAULT_SERVICES}; do
-  if [ -d "$ROOTFS_PATH/etc/sv/$S/supervise" ]; then
-    rm -rf "$ROOTFS_PATH/etc/sv/$S/supervise"
-  fi
+for S in ${SYSINIT_SERVICES}; do
+  "$HELPERS_PATH"/chroot_exec.sh rc-update add "$S" sysinit
+done
 
-  ln -sf /run/runit/supervise."$S" "$ROOTFS_PATH"/etc/sv/"$S"/supervise
-  ln -sf /etc/sv/"$S" "$ROOTFS_PATH"/etc/runit/runsvdir/default/
+for S in ${BOOT_SERVICES}; do
+  "$HELPERS_PATH"/chroot_exec.sh rc-update add "$S" boot
+done
+
+for S in ${DEFAULT_SERVICES}; do
+  "$HELPERS_PATH"/chroot_exec.sh rc-update add "$S" default
+done
+
+for S in ${SHUTDOWN_SERVICES}; do
+  "$HELPERS_PATH"/chroot_exec.sh rc-update add "$S" shutdown
 done
