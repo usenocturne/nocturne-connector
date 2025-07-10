@@ -16,4 +16,6 @@ sed -i 's/^#PermitRootLogin prohibit-password/PermitRootLogin yes/' "$ROOTFS_PAT
 
 sed -i 's/^#\(ttyS0::respawn:\/sbin\/getty -L 115200 ttyS0 vt100\)/\1/' "$ROOTFS_PATH"/etc/inittab
 
+sed -i 's/^#rc_parallel="NO"/rc_parallel="YES"/' "$ROOTFS_PATH"/etc/rc.conf
+
 DEFAULT_SERVICES="$DEFAULT_SERVICES sshd"

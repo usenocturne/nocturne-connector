@@ -82,9 +82,10 @@ rm "$OUTPUT_PATH"/boot/initramfs* "$OUTPUT_PATH"/boot/issue.txt "$OUTPUT_PATH"/b
 mkdir -p "$OUTPUT_PATH"/root/lib/modules
 cp -r "$ROOT_MNT_PATH"/lib/modules/* "$OUTPUT_PATH"/root/lib/modules
 rm -rf "$OUTPUT_PATH"/root/lib/modules/*rpi-2712
-rm -rf "$OUTPUT_PATH"/root/lib/modules/*/kernel/{fs,sound,lib}
+rm -rf "$OUTPUT_PATH"/root/lib/modules/*/kernel/{arch,crypto,fs,sound,lib,kernel}
 rm -rf "$OUTPUT_PATH"/root/lib/modules/*/kernel/drivers/{ata,auxdisplay,accessibility,base,bcma,block,bluetooth,cdrom,clk,connector,gpu,hid,iio,input,i2c,leds,md,mfd,mmc,mtd,mux,nvmem,pinctrl,pps,rtc,scsi,spi,ssb,staging,uio,vhost,video,w1}
-rm -rf "$OUTPUT_PATH"/root/lib/modules/*/kernel/drivers/media/{cec,common,dvb-core,dvb-frontends,i2c,mc,pci,radio,rc,spi,test-drivers,tuners,v4l2-core}
+rm -rf "$OUTPUT_PATH"/root/lib/modules/*/kernel/drivers/media/{cec,common,dvb-core,dvb-frontends,i2c,mc,pci,radio,rc,spi,test-drivers,tuners,v4l2-core,platform}
+rm -rf "$OUTPUT_PATH"/root/lib/modules/*/kernel/net/{6lowpan,9p,802,8021q,appletalk,atm,ax25,batman-adv,bluetooth,can,ceph,core,ieee802154,key,l2tp,llc,mac80211,mac802154,mpls,mptcp,netrom,nfc,nsh,openvswitch,rose,sched,sctp,vmw_vsock,xfrm}
 
 chown -R root:root "$OUTPUT_PATH"/*
 
