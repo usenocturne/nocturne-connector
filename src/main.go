@@ -486,6 +486,61 @@ func main() {
 		}()
 	}))
 
+	// POST /network/restore
+	http.HandleFunc("/network/restore", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Method not allowed"})
+			return
+		}
+
+		var networks []struct {
+			SSID string `json:"ssid"`
+			PSK  string `json:"psk"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&networks); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Invalid request body: " + err.Error()})
+			return
+		}
+
+		file, err := os.OpenFile("/etc/wpa_supplicant/wpa_supplicant.conf", os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to open wpa_supplicant.conf: " + err.Error()})
+			return
+		}
+		defer file.Close()
+
+		for _, n := range networks {
+			if strings.TrimSpace(n.SSID) == "" {
+				continue
+			}
+
+			block := "network={\n"
+			block += fmt.Sprintf("        ssid=\"%s\"\n", n.SSID)
+			if n.PSK == "" || n.PSK == "undefined" {
+				block += "        key_mgmt=NONE\n"
+			} else {
+				block += fmt.Sprintf("        psk=\"%s\"\n", n.PSK)
+			}
+			block += "}\n\n"
+
+			if _, err := file.WriteString(block); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to write to wpa_supplicant.conf: " + err.Error()})
+				return
+			}
+		}
+
+		if err := json.NewEncoder(w).Encode(OKResponse{Status: "success"}); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to encode JSON: " + err.Error()})
+			return
+		}
+	}))
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "20574"
