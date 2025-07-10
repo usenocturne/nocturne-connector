@@ -97,11 +97,6 @@ run_stage_scripts() {
 # Stage 40 - Create images
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 
-if [ ! -d "$RES_PATH"/stock-files/output ]; then
-  color_echo "Please run 'cd resources/stock-files && sudo ./download.sh' first." -Red
-  exit 1
-fi
-
 for _stage in ${STAGES}; do
   run_stage_scripts "$_stage"
 done

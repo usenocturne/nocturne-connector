@@ -1,4 +1,4 @@
-kernel=kernel8.img
+kernel=vmlinuz-rpi
 initramfs initramfs.cpio.zst followkernel
 arm_64bit=1
 enable_uart=1
