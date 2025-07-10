@@ -24,8 +24,8 @@ echo "net.ipv6.conf.all.forwarding=1" >> "$ROOTFS_PATH"/etc/sysctl.conf
 
 echo "172.16.42.2 superbird" >> "$ROOTFS_PATH"/etc/hosts
 
-rm -f "$ROOTFS_PATH"/etc/nftables.conf
-cp "$RES_PATH"/config/nftables.conf "$ROOTFS_PATH"/etc/nftables.conf
+rm -f "$ROOTFS_PATH"/etc/nftables.nft
+cp "$RES_PATH"/config/nftables.nft "$ROOTFS_PATH"/etc/nftables.nft
 
 echo "SUBSYSTEM==\"net\", ATTRS{idVendor}==\"0000\", ATTRS{idProduct}==\"1014\", NAME=\"usb0\"" > "$ROOTFS_PATH"/usr/lib/udev/rules.d/carthing.rules
 
