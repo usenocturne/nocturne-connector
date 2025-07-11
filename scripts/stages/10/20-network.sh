@@ -1,12 +1,14 @@
 #!/bin/sh
 
-"$HELPERS_PATH"/chroot_exec.sh apk add wireless-tools wpa_supplicant wpa_supplicant-openrc nftables eudev udev-init-scripts networkmanager networkmanager-cli linux-firmware-brcm
+"$HELPERS_PATH"/chroot_exec.sh apk add wireless-tools wpa_supplicant wpa_supplicant-openrc nftables eudev udev-init-scripts networkmanager networkmanager-cli linux-firmware-brcm networkmanager-wifi
 
 mkdir -p "$ROOTFS_PATH"/etc/wpa_supplicant
-cat > "$ROOTFS_PATH"/etc/wpa_supplicant/wpa_supplicant.conf <<EOF
-ctrl_interface=/run/wpa_supplicant
-update_config=0
-EOF
+rm -f "$ROOTFS_PATH"/etc/wpa_supplicant/wpa_supplicant.conf
+ln -fs /tmp/wpa_supplicant.conf "$ROOTFS_PATH"/etc/wpa_supplicant/wpa_supplicant.conf
+
+sed -i '\|default_conf=/etc/wpa_supplicant/wpa_supplicant.conf|a \
+  echo "ctrl_interface=/run/wpa_supplicant" > /tmp/wpa_supplicant.conf \
+  echo "update_config=1" >> /tmp/wpa_supplicant.conf' "$ROOTFS_PATH"/etc/init.d/wpa_supplicant
 
 cat > "$ROOTFS_PATH"/etc/network/interfaces <<EOF
 auto lo
@@ -33,6 +35,14 @@ cat > "$ROOTFS_PATH"/etc/NetworkManager/NetworkManager.conf << EOF
 [main]
 dhcp=internal
 rc-manager=file
+plugins=ifupdown,keyfile
+
+[ifupdown]
+managed=true 
+
+[device]
+wifi.scan-rand-mac-address=yes
+wifi.backend=wpa_supplicant
 EOF
 
 cat > "$ROOTFS_PATH"/etc/NetworkManager/system-connections/usb0.nmconnection << EOF
