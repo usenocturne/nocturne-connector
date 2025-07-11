@@ -3,12 +3,12 @@
 mkdir -p "$WORK_PATH"/kernel "$ROOTFS_PATH"/tempapk
 
 "$HELPERS_PATH"/chroot_exec.sh apk fetch linux-rpi -o /tempapk
-tar -C "$WORK_PATH"/kernel -zxf "$ROOTFS_PATH"/tempapk/linux-rpi* || return 1
+tar -C "$WORK_PATH"/kernel -zxf "$ROOTFS_PATH"/tempapk/linux-rpi* 2> /dev/null || return 1
 rm "$ROOTFS_PATH"/tempapk/linux-rpi*
 
 for i in raspberrypi-bootloader-common raspberrypi-bootloader; do
   "$HELPERS_PATH"/chroot_exec.sh apk fetch $i -o /tempapk
-  tar -C "$WORK_PATH"/kernel/boot -zxf "$ROOTFS_PATH"/tempapk/$i* --strip=1 boot/ || return 1
+  tar --C "$WORK_PATH"/kernel/boot -zxf "$ROOTFS_PATH"/tempapk/$i* --strip=1 boot/ 2> /dev/null || return 1
   rm "$ROOTFS_PATH"/tempapk/$i*
 done
 

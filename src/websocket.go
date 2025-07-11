@@ -38,6 +38,24 @@ func broadcastEvent(event wpa_supplicant.Event) {
 		}
 	}
 
+	if strings.Contains(event.Data, "CTRL-EVENT-CONNECTED") {
+		go func() {
+			out, err := runShell("/etc/wpa_supplicant/wpa_cli.sh wlan0 CONNECTED")
+			if err != nil {
+				log.Printf("Error running wpa_cli CONNECTED: %v, output: %s", err, out)
+			}
+		}()
+	}
+
+	if strings.Contains(event.Data, "CTRL-EVENT-DISCONNECTED") {
+		go func() {
+			out, err := runShell("/etc/wpa_supplicant/wpa_cli.sh wlan0 DISCONNECTED")
+			if err != nil {
+				log.Printf("Error running wpa_cli DISCONNECTED: %v, output: %s", err, out)
+			}
+		}()
+	}
+
 	clientsMux.Lock()
 	for client := range clients {
 		if err := client.WriteJSON(message); err != nil {

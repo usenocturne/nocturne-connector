@@ -38,7 +38,7 @@ func main() {
 	}
 
 	var ctrl *wpa_supplicant.ControlInterface
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 30; i++ {
 		ctrl, err = wpa_supplicant.Connect("/run/wpa_supplicant/wlan0")
 		if err == nil {
 			break
