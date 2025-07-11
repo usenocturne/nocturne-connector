@@ -1,6 +1,6 @@
 #!/bin/sh
 
-FS_FILE="/tmp/boot.img"
+FS_FILE="/tmp/connector.img"
 STAGE_DIR="$(mktemp -d)"
 MNT_DIR="$(mktemp -d)"
 
@@ -27,4 +27,4 @@ rsync -a "$STAGE_DIR/" "$MNT_DIR/"
 umount "$MNT_DIR"
 rmdir "$MNT_DIR"
 rm -rf "$STAGE_DIR"
-mv "$FS_FILE" "$OUTPUT_PATH"/boot.img
+mv "$FS_FILE" "$OUTPUT_PATH"/connector.img
