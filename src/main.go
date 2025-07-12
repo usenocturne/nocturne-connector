@@ -534,6 +534,17 @@ func main() {
 			}
 		}
 
+		res, err := ctrl.SendRequest(ctx, "RECONFIGURE")
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to reconfigure wpa_supplicant: " + err.Error()})
+			return
+		} else if res != "OK\n" {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to reconfigure wpa_supplicant: " + res})
+			return
+		}
+
 		if err := json.NewEncoder(w).Encode(OKResponse{Status: "success"}); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to encode JSON: " + err.Error()})
