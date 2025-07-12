@@ -25,7 +25,7 @@ EOF
 echo "net.ipv4.ip_forward=1" >> "$ROOTFS_PATH"/etc/sysctl.conf
 echo "net.ipv6.conf.all.forwarding=1" >> "$ROOTFS_PATH"/etc/sysctl.conf
 
-echo "172.16.42.2 superbird" >> "$ROOTFS_PATH"/etc/hosts
+echo "172.16.42.2 nocturne" >> "$ROOTFS_PATH"/etc/hosts
 
 rm -f "$ROOTFS_PATH"/etc/nftables.nft
 cp "$RES_PATH"/config/nftables.nft "$ROOTFS_PATH"/etc/nftables.nft
@@ -55,4 +55,4 @@ chmod 600 "$ROOTFS_PATH"/etc/NetworkManager/system-connections/usb0.nmconnection
 echo "ENV{DEVTYPE}==\"gadget\", ENV{NM_UNMANAGED}=\"0\"" > "$ROOTFS_PATH"/usr/lib/udev/rules.d/98-network.rules
 
 DEFAULT_SERVICES="${DEFAULT_SERVICES} wpa_supplicant wpa_cli nftables udev-postmount networkmanager"
-SYSINIT_SERVICES="${SYSINIT_SERVICES} udev udev-trigger udev-settle"
+SYSINIT_SERVICES="${SYSINIT_SERVICES} udev udev-trigger"
