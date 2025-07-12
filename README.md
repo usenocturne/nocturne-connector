@@ -59,11 +59,17 @@ Available recipes:
 
 ## Tinkering (Advanced)
 
-SSH is open on port 22. Root password is `nocturne`.
+UART (with a TTY) is enabled and is the recommended way to debug and interact with the system without the need for SSH. SSH is open on port 22 if you'd like instead. Root password is `nocturne`.
 
-You may remount the rootfs as read-write with `mount -o remount,rw /`
+You may remount the rootfs as read-write with `mount -o remount,rw /`. Any changes to the rootfs are temporary as the OS is booted from RAM. Please update `/connector.img` on your Car Thing.
 
-Any changes to the rootfs are temporary as the OS is booted from RAM. Please update `/connector.img` on your Car Thing.
+### How does it boot without an SD card??
+
+Nocturne Connector uses a specially crafted Alpine initramfs. Your Car Thing is configured as a USB gadget for both USB networking and mass storage. The mass storage part is how the Pi can boot off of it.
+
+When a Raspberry Pi boots, it first looks for an SD card, and if there isn't one, it'll fall back to USB boot. This will power up all USB devices and wait for one to show some sort of boot medium. This works in our favor because we can have a zero config Pi boot filesystem that is stored on the Car Thing.
+
+Inside `connector.img`, there is a standard Pi boot filesystem, but there is no root partition. The rootfs is stored in `initramfs.cpio.zst` on the boot filesystem, and the Pi is told to use that to boot inside `config.txt`. Typically, on a traditional Linux system, the initramfs is used to prepare the system, such as decrypt and/or mount filesystems, but we can use it here as a read-only filesystem to boot from, as we aren't required to store any data on it.
 
 ## Credits
 
