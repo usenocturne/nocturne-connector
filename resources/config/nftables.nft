@@ -28,6 +28,9 @@ table ip nat {
 
         tcp dport 2022 iifname "wlan0" dnat to 172.16.42.2:22
         tcp dport 2222 iifname "wlan0" dnat to 172.16.42.2:9222
+        
+        tcp dport 2022 iifname "eth0" dnat to 172.16.42.2:22
+        tcp dport 2222 iifname "eth0" dnat to 172.16.42.2:9222
     }
 
     chain postrouting {

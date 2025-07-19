@@ -4,10 +4,7 @@ set -e
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Image build config
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-: "${CONNECTOR_IMAGE_VERSION:="v3.0.0-beta3"}"
-
-: "${UBOOT_PROJ_ID:="32838267"}"
-: "${UBOOT_TOOL_PROJ_ID:="33098050"}"
+: "${CONNECTOR_IMAGE_VERSION:="v1.0.0"}"
 
 : "${ALPINE_BUILD:="3.21"}"
 : "${ALPINE_BUILD_PATCH:="3"}"
@@ -23,12 +20,15 @@ set -e
 : "${DEFAULT_SERVICES:=""}"
 : "${SHUTDOWN_SERVICES:="killprocs"}"
 
+: "${SIZE_BOOT:="100M"}"
+: "${SIZE_ROOT:="100M"}"
+
 : "${STAGES:="00 10 20 30 40"}"
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Static config
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-REQUIRED_CMDS=(curl zip unzip genimage mkpasswd)
+REQUIRED_CMDS=(curl zip unzip genimage mkpasswd m4)
 for cmd in "${REQUIRED_CMDS[@]}"; do
   if ! command -v "$cmd" > /dev/null 2>&1; then
     echo "$cmd is required to run this script."
@@ -39,9 +39,11 @@ done
 SAVED_PWD="$(pwd)"
 
 WORK_PATH=$(mktemp -d)
+export BOOTFS_PATH="${WORK_PATH}/bootfs"
 export ROOTFS_PATH="${WORK_PATH}/rootfs"
 export OUTPUT_PATH="${SAVED_PWD}/output"
 export CACHE_PATH="${SAVED_PWD}/cache"
+export IMAGE_PATH="${WORK_PATH}/image"
 
 export CONNECTOR_PATH="${SAVED_PWD}/src"
 export SCRIPTS_PATH="${SAVED_PWD}/scripts"
@@ -49,11 +51,20 @@ export HELPERS_PATH="${SAVED_PWD}/scripts/build-helpers"
 export RES_PATH="${SAVED_PWD}/resources"
 DEF_STAGE_PATH="${SAVED_PWD}/scripts/stages"
 
-mkdir -p "$ROOTFS_PATH" "$OUTPUT_PATH" "$CACHE_PATH"
+mkdir -p "$BOOTFS_PATH" "$ROOTFS_PATH" "$OUTPUT_PATH" "$CACHE_PATH" "$IMAGE_PATH"
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Functions
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+make_image() {
+  [ -d /tmp/genimage ] && rm -rf /tmp/genimage
+  genimage --rootpath "$1" \
+    --tmppath /tmp/genimage \
+    --inputpath "$IMAGE_PATH" \
+    --outputpath "$IMAGE_PATH" \
+    --config "$2"
+}
+
 color_echo() {
   ColourOff='\033[0m'
   Prefix='\033[0;'

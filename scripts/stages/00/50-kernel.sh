@@ -18,7 +18,7 @@ rmdir "$ROOTFS_PATH"/tempapk
   cd "$WORK_PATH"/kernel || exit 1
   rm -f boot/System.map-* boot/config-*
 
-  rm -rf lib/modules/*/kernel/{arch,fs,sound,security,lib,kernel}
+  rm -rf lib/modules/*/kernel/{arch,sound,security,lib,kernel}
   find lib/modules/*/kernel/crypto ! -name 'zstd.ko.xz' -exec rm -rf {} + 2> /dev/null
   rm -rf lib/modules/*/kernel/drivers/{ata,auxdisplay,accessibility,base,bcma,block,bluetooth,cdrom,clk,connector,gpu,hid,iio,input,i2c,leds,md,mfd,mmc,mtd,mux,nvmem,pinctrl,pps,rtc,scsi,spi,ssb,staging,uio,vhost,video,w1}
   rm -rf lib/modules/*/kernel/drivers/media/{cec,common,dvb-core,dvb-frontends,i2c,mc,pci,radio,rc,spi,test-drivers,tuners,v4l2-core,platform}

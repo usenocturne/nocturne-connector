@@ -1,3 +1,5 @@
+/dev/mmcblk0p2  /           ext4     defaults,rw         0 1
+
 proc            /proc       proc     defaults            0 0
 sysfs           /sys        sysfs    defaults            0 0
 devpts          /dev/pts    devpts   gid=4,mode=620      0 0

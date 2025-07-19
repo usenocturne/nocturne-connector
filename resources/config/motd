@@ -1,10 +1,4 @@
 Welcome to Nocturne Connector OS!
 
-If you are experienced and you want to change something, you may
-remount the rootfs as read-write with: mount -o remount,rw /
-
-Any changes to the rootfs are temporary as the OS is booted
-from RAM. Please update /connector.img on your Car Thing.
-
 * GitHub: https://github.com/usenocturne/nocturne-connector
 
