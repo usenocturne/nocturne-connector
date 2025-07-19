@@ -1,6 +1,6 @@
 <h1 align="center">
   <br>
-  <a href="http://www.amitmerchant.com/electron-markdownify"><img src="https://usenocturne.com/images/logo.png" alt="Nocturne" width="200"></a>
+  <img src="https://usenocturne.com/images/logo.png" alt="Nocturne" width="200">
   <br>
   Nocturne Connector
   <br>
@@ -25,13 +25,18 @@
 - Raspberry Pi with networking
   - Pi 1 and 2 are not supported due to lack of onboard Wi-Fi
   - Pi Zero 1 (W) is not supported due to the old architecture
+- SD card
+  - Nocturne Connector is super small (~60 MB) so you have many choices for SD cards
 - Working Wi-Fi network
 - Car Thing with Nocturne 3.0.0 or later installed
 
 ## Usage
 
-1. Plug your Car Thing into a USB 3 port (if applicable) on your Raspberry Pi
-2. Remove any SD cards and power the Raspberry Pi
+1. Flash the [img.gz from the latest release](https://github.com/usenocturne/nocturne-connector/releases) to your SD card
+2. Insert the SD card into your Raspberry Pi
+3. Plug your Car Thing into a USB 3 port (if applicable) on your Raspberry Pi
+  - If you are using a Pi Zero, plug your Car Thing into the data port.
+4. Power the Raspberry Pi & set up Wi-Fi on your Car Thing
 
 ## Donate
 
@@ -43,7 +48,7 @@ All donations are split between the four members of the Nocturne team, and go to
 
 ## Building
 
-`curl`, `zip/unzip`, `genimage`, and `mkpasswd` binaries are required.
+`curl`, `zip/unzip`, `genimage`, `mkpasswd`, and `m4` binaries are required.
 
 If you are on an architecture other than arm64, qemu-user-static (+ binfmt, or use `docker run --rm --privileged multiarch/qemu-user-static --reset -p yes`) is required.
 
@@ -53,6 +58,7 @@ Use the `Justfile`. `just run` will output an initramfs and boot image in `outpu
 $ just -l
 Available recipes:
   connector-api
+  docker-qemu
   lint
   run
 ```
@@ -60,16 +66,6 @@ Available recipes:
 ## Tinkering (Advanced)
 
 UART (with a TTY) is enabled and is the recommended way to debug and interact with the system without the need for SSH. SSH is open on port 22 if you'd like instead. Root password is `nocturne`.
-
-You may remount the rootfs as read-write with `mount -o remount,rw /`. Any changes to the rootfs are temporary as the OS is booted from RAM. Please update `/connector.img` on your Car Thing.
-
-### How does it boot without an SD card??
-
-Nocturne Connector uses a specially crafted Alpine initramfs. Your Car Thing is configured as a USB gadget for both USB networking and mass storage. The mass storage part is how the Pi can boot off of it.
-
-When a Raspberry Pi boots, it first looks for an SD card, and if there isn't one, it'll fall back to USB boot. This will power up all USB devices and wait for one to show some sort of boot medium. This works in our favor because we can have a zero config Pi boot filesystem that is stored on the Car Thing.
-
-Inside `connector.img`, there is a standard Pi boot filesystem, but there is no root partition. The rootfs is stored in `initramfs.cpio.zst` on the boot filesystem, and the Pi is told to use that to boot inside `config.txt`. Typically, on a traditional Linux system, the initramfs is used to prepare the system, such as decrypt and/or mount filesystems, but we can use it here as a read-only filesystem to boot from, as we aren't required to store any data on it.
 
 ## Credits
 
