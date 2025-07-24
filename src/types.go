@@ -23,3 +23,7 @@ type NetworkStatus struct {
 	WPAState       string `json:"wpaState"`
 	IPAddress      string `json:"ipAddress"`
 }
+
+type SignalResponse struct {
+	RSSI string `json:"rssi"`
+}

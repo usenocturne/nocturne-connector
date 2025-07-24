@@ -180,6 +180,42 @@ func main() {
 		}
 	}))
 
+	// GET /network/signal
+	http.HandleFunc("/network/signal", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Method not allowed"})
+			return
+		}
+
+		res, err := ctrl.SendRequest(ctx, "SIGNAL_POLL")
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to send signal poll command: " + err.Error()})
+			return
+		}
+
+		var rssi string
+		for _, line := range strings.Split(res, "\n") {
+			if strings.HasPrefix(line, "RSSI=") {
+				rssi = strings.TrimSpace(strings.TrimPrefix(line, "RSSI="))
+				break
+			}
+		}
+
+		if rssi == "" {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "RSSI value not found in response"})
+			return
+		}
+
+		if err := json.NewEncoder(w).Encode(SignalResponse{RSSI: rssi}); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to encode JSON: " + err.Error()})
+			return
+		}
+	}))
+
 	// GET /network/list
 	http.HandleFunc("/network/list", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
