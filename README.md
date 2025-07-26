@@ -6,14 +6,14 @@
   <br>
 </h1>
 
-<h4 align="center">OS for Raspberry Pi to make connecting a <a href="https://carthing.spotify.com/" target="_blank">Spotify Car Thing</a> for desk use easy.</h4>
+<p align="center">Raspberry Pi OS for Wi-Fi connectivity on the Spotify Car Thing</p>
 
 <p align="center">
   <a href="#prerequisites">Prerequisites</a> •
   <a href="#usage">Usage</a> •
-  <a href="#updating">Updating</a> •
   <a href="#donate">Donate</a> •
   <a href="#building">Building</a> •
+  <a href="#tinkering-advanced">Tinkering (Advanced)</a> •
   <a href="#credits">Credits</a> •
   <a href="#license">License</a>
 </p>
@@ -23,10 +23,10 @@
 ## Prerequisites
 
 - Raspberry Pi with networking
-  - Pi 1 and 2 are not supported due to lack of onboard Wi-Fi
+  - Pi 1 and 2 are not supported due to the lack of onboard Wi-Fi
   - Pi Zero 1 (W) is not supported due to the old architecture
 - SD card
-  - Nocturne Connector is super small (~60 MB) so you have many choices for SD cards
+  - Nocturne Connector is super small (~60 MB), so you have many choices for SD cards
 - Working Wi-Fi network
 - Car Thing with Nocturne 3.0.0 or later installed
 
@@ -35,16 +35,16 @@
 1. Flash the [img.gz from the latest release](https://github.com/usenocturne/nocturne-connector/releases) to your SD card
 2. Insert the SD card into your Raspberry Pi
 3. Plug your Car Thing into a USB 3 port (if applicable) on your Raspberry Pi
-  - If you are using a Pi Zero, plug your Car Thing into the data port.
+   - If you are using a Pi Zero, plug your Car Thing into the data port.
 4. Power the Raspberry Pi & set up Wi-Fi on your Car Thing
 
 ## Donate
 
-Nocturne is a massive endeavor, and the team have spent everyday over the last few months making it a reality out of our passion for creating something that people like you love to use.
+Nocturne is a massive endeavor, and the team has spent every day over the last year making it a reality out of our passion for creating something that people like you love to use.
 
-All donations are split between the four members of the Nocturne team, and go towards the development of future features. We are so grateful for your support!
+All donations are split between the three members of the Nocturne team and go towards the development of future features. We are so grateful for your support!
 
-[Buy Me a Coffee](https://buymeacoffee.com/brandonsaldan) | [Ko-Fi](https://ko-fi.com/brandonsaldan)
+[Donation Page](https://usenocturne.com/donate)
 
 ## Building
 
@@ -52,7 +52,7 @@ All donations are split between the four members of the Nocturne team, and go to
 
 If you are on an architecture other than arm64, qemu-user-static (+ binfmt, or use `docker run --rm --privileged multiarch/qemu-user-static --reset -p yes`) is required.
 
-Use the `Justfile`. `just run` will output an initramfs and boot image in `output`.
+Use the `Justfile`. `just run` will output a flashable `img.gz` in `output`.
 
 ```
 $ just -l
@@ -71,10 +71,8 @@ UART (with a TTY) is enabled and is the recommended way to debug and interact wi
 
 This software was made possible only through the following individuals and open source programs:
 
-- [Brandon Saldan](https://github.com/brandonsaldan)
 - [shadow](https://github.com/68p)
 - [Dominic Frye](https://github.com/itsnebulalol)
-- [bbaovanc](https://github.com/bbaovanc)
 
 ### Image
 
@@ -90,7 +88,7 @@ This project is licensed under the **Apache** license.
 
 ---
 
-> © 2025 Nocturne.
+> © 2025 Vanta Labs.
 
 > "Spotify" and "Car Thing" are trademarks of Spotify AB. This software is not affiliated with or endorsed by Spotify AB.
 
