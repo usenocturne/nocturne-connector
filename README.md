@@ -32,7 +32,7 @@
 
 ## Usage
 
-1. Flash the [img.gz from the latest release](https://github.com/usenocturne/nocturne-connector/releases) to your SD card
+1. Flash the [img.gz from the latest release](https://github.com/usenocturne/nocturne-connector/releases/latest) to your SD card
 2. Insert the SD card into your Raspberry Pi
 3. Plug your Car Thing into a USB 3 port (if applicable) on your Raspberry Pi
    - If you are using a Pi Zero, plug your Car Thing into the data port.
