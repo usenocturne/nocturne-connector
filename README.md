@@ -32,11 +32,13 @@
 
 ## Usage
 
-1. Flash the [img.gz from the latest release](https://github.com/usenocturne/nocturne-connector/releases/latest) to your SD card
-2. Insert the SD card into your Raspberry Pi
-3. Plug your Car Thing into a USB 3 port (if applicable) on your Raspberry Pi
+1. Download the [img.gz from the latest release](https://github.com/usenocturne/nocturne-connector/releases/latest)
+2. Use [Raspberry Pi Imager](https://www.raspberrypi.com/software/), [balenaEtcher](https://etcher.balena.io/), or dd to flash the image to your SD card
+   - In Raspberry Pi Imager, choose your Pi model, use "Use custom" in "Choose OS", select your SD card, press next, then choose "No" for customization.
+4. Insert the SD card into your Raspberry Pi
+5. Plug your Car Thing into a USB 3 port (if applicable) on your Raspberry Pi
    - If you are using a Pi Zero, plug your Car Thing into the data port.
-4. Power the Raspberry Pi & set up Wi-Fi on your Car Thing
+6. Power the Raspberry Pi & set up Wi-Fi on your Car Thing
 
 ## Donate
 
