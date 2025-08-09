@@ -23,8 +23,6 @@
   <a href="https://discord.gg/mnURjt3M6m"></a><img alt="Discord" src="https://img.shields.io/discord/1304909652387172493?style=flat-square&logo=discord&logoColor=FFFFFF&label=discord"></a>
 </div>
 
-<br>
-
 ## Prerequisites
 
 - Raspberry Pi with networking
