@@ -1,0 +1,38 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "display-p3:0.14510,0.20392,0.40784,1.00000",
+      "display-p3:0.08235,0.07059,0.18431,1.00000"
+    ]
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "image-name" : "nocturne.svg",
+          "name" : "nocturne",
+          "position" : {
+            "scale" : 1.5,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}

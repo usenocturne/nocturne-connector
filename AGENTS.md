@@ -29,6 +29,7 @@ nocturne-connector/
 ├── resources/                    # Image-build assets
 ├── cache/                        # Build cache (gitignored)
 ├── output/                       # Final flashable image: nocturne-connector_v<X>.img.gz + .sha256
+├── macos/                        # Native macOS port of the connector (see "MACOS APP" below)
 └── src/                          # The actual Bun application — gets baked into the Pi rootfs
     ├── package.json              # bun + vite + elysia + react + dbus-next + supabase-js
     ├── bunfig.toml
@@ -62,6 +63,29 @@ nocturne-connector/
         ├── components/           # Layout.tsx, ThemeProvider.tsx, ui/* (Radix wrappers)
         └── hooks/                # useAuth, useWebSocket, ...
 ```
+
+## MACOS APP (`macos/`)
+
+A native SwiftUI port of this connector (`Nocturne.xcodeproj`, single target
+`Nocturne`, bundle id `com.usenocturne.nocturne`) that replaces the Pi: same
+internal Spotify APIs, same RPC/chunking wire format, Bluetooth Classic RFCOMM
+via IOBluetooth. Build with
+`xcodebuild -project Nocturne.xcodeproj -scheme Nocturne build` (automatic
+signing — do NOT disable code signing; the stable signature keeps TCC/keychain
+grants). Behavior notes:
+
+- **Menu bar app + launch at login.** Registers itself as a login item by
+  default on first run (`SMAppService.mainApp`, toggle in Settings → Startup).
+  Once setup is complete, every launch is background-only: no window, accessory
+  activation policy, menu bar icon (dimmed = disconnected). The window opens
+  from the menu bar panel or by reopening the app; closing it returns the app
+  to menu-bar-only. The connector must keep running windowless — reconnection
+  is two-sided: the Mac answers the Car Thing's ACL probes AND proactively
+  redials bonded Car Things' RFCOMM channel 2 on a 3s sweep (the device's own
+  iAP2 probe times out at 5s and then waits for the host to dial in, so a
+  listen-only Mac deadlocks after a device restart).
+- **Pairing is never app-driven** — users pair in System Settings → Bluetooth;
+  the app only watches the bond list and manages RFCOMM to bonded Car Things.
 
 ## SERVER ↔ CLIENT WIRE CONTRACT
 
