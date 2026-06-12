@@ -24,8 +24,11 @@ final class RPCManager: ObservableObject {
 
     private var connections: [String: Connection] = [:]
     private var keepAliveTask: Task<Void, Never>?
+    private var keepAliveFailures: [String: Int] = [:]
+    private static let keepAliveFailureLimit = 2
     private var downloadedOTAFileURL: URL? = nil
     private var authObservation: AnyCancellable?
+    var onStaleConnection: ((String) -> Void)?
 
     init(spotify: SpotifyService) {
         self.spotify = spotify
@@ -79,6 +82,7 @@ final class RPCManager: ObservableObject {
         }
 
         connections[key] = Connection(address: address, channel: channel, client: client)
+        keepAliveFailures[key] = 0
         log.info("RPC client attached: \(key, privacy: .public) (RFCOMM MTU \(channel.getMTU(), privacy: .public))")
 
         startKeepAliveIfNeeded()
@@ -105,6 +109,19 @@ final class RPCManager: ObservableObject {
         let key = channelKey(address: address, channel: channel)
         if let conn = connections.removeValue(forKey: key) {
             conn.client.cleanup()
+            keepAliveFailures.removeValue(forKey: key)
+            log.info("RPC client detached: \(key, privacy: .public)")
+        }
+        if connections.isEmpty {
+            stopKeepAlive()
+        }
+    }
+
+    func detachAll(address: String) {
+        for (key, conn) in connections where conn.address == address {
+            conn.client.cleanup()
+            connections.removeValue(forKey: key)
+            keepAliveFailures.removeValue(forKey: key)
             log.info("RPC client detached: \(key, privacy: .public)")
         }
         if connections.isEmpty {
@@ -150,6 +167,7 @@ final class RPCManager: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 15_000_000_000)
                 guard let self, !Task.isCancelled else { return }
+                var staleAddresses = Set<String>()
                 for (key, conn) in self.connections {
                     do {
                         _ = try await conn.client.call(
@@ -160,9 +178,19 @@ final class RPCManager: ObservableObject {
                             ])
                         )
                         self.lastPing = Date()
+                        self.keepAliveFailures[key] = 0
                     } catch {
-                        self.log.warning("Keep-alive failed for \(key, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                        let failures = (self.keepAliveFailures[key] ?? 0) + 1
+                        self.keepAliveFailures[key] = failures
+                        self.log.warning("Keep-alive failed (\(failures, privacy: .public)/\(Self.keepAliveFailureLimit, privacy: .public)) for \(key, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                        if failures >= Self.keepAliveFailureLimit {
+                            staleAddresses.insert(conn.address)
+                        }
                     }
+                }
+                for address in staleAddresses {
+                    self.log.error("RPC link to \(address, privacy: .public) is unresponsive; tearing it down for redial")
+                    self.onStaleConnection?(address)
                 }
                 await self.broadcastToDevices(topic: "spotify.auth.status", data: .map([
                     (.string("authenticated"), .bool(self.spotify.isSpotifyLinked)),

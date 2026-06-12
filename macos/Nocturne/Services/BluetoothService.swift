@@ -234,7 +234,7 @@ final class BluetoothService: ObservableObject {
             guard device.isPaired() else { return }
 
             if !device.isConnected() {
-                let r = device.openConnection()
+                let r = await openBaseband(device: device)
                 log.info("openConnection(\(addr, privacy: .public)) -> \(r, privacy: .public) [round \(round, privacy: .public)/\(Self.dialRounds, privacy: .public)]")
                 if r != kIOReturnSuccess {
                     try? await Task.sleep(nanoseconds: Self.dialRoundDelay)
@@ -259,6 +259,34 @@ final class BluetoothService: ObservableObject {
         let hasInbound = activeChannels.keys.contains(where: { $0.hasPrefix("\(addr)#") })
         if userInitiated && !hasInbound {
             lastError = "Couldn't open the RPC channel to the Car Thing. Make sure it's paired in System Settings → Bluetooth and in range, then try again."
+        }
+    }
+
+    private var basebandWaiters: [UUID: (address: String, cont: CheckedContinuation<IOReturn, Never>)] = [:]
+
+    private func openBaseband(device: IOBluetoothDevice) async -> IOReturn {
+        let addr = device.addressString ?? "?"
+        let id = UUID()
+        return await withCheckedContinuation { cont in
+            basebandWaiters[id] = (addr, cont)
+            let queued = device.openConnection(bridge)
+            if queued != kIOReturnSuccess {
+                basebandWaiters.removeValue(forKey: id)?.cont.resume(returning: queued)
+                return
+            }
+
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 25_000_000_000)
+                self?.basebandWaiters.removeValue(forKey: id)?.cont.resume(returning: kIOReturnTimeout)
+            }
+        }
+    }
+
+    fileprivate func reportBasebandConnectComplete(device: IOBluetoothDevice, status: IOReturn) {
+        let addr = device.addressString ?? "?"
+        let ids = basebandWaiters.filter { $0.value.address == addr }.map(\.key)
+        for id in ids {
+            basebandWaiters.removeValue(forKey: id)?.cont.resume(returning: status)
         }
     }
 
@@ -348,9 +376,19 @@ final class BluetoothService: ObservableObject {
             activeChannels[key]?.close()
             activeChannels.removeValue(forKey: key)
         }
+        rpcManager?.detachAll(address: address)
         connections.removeAll { $0.address == address }
         if let idx = devices.firstIndex(where: { $0.address == address }) {
             devices[idx].connected = false
+        }
+        peerConnectability[address] = .unknown
+    }
+
+    func teardownStaleLink(address: String) {
+        log.warning("Tearing down unresponsive link to \(address, privacy: .public); resync will redial")
+        disconnect(address: address)
+        if let device = IOBluetoothDevice(addressString: address), device.isConnected() {
+            device.closeConnection()
         }
     }
 
@@ -466,6 +504,10 @@ final class BluetoothDelegateBridge: NSObject, IOBluetoothRFCOMMChannelDelegate 
         Task { @MainActor in self.service?.handleACLConnect(device: device) }
     }
 
+    @objc func connectionComplete(_ device: IOBluetoothDevice, status: IOReturn) {
+        Task { @MainActor in self.service?.reportBasebandConnectComplete(device: device, status: status) }
+    }
+
     func rfcommChannelOpenComplete(_ rfcommChannel: IOBluetoothRFCOMMChannel!, status error: IOReturn) {
         Task { @MainActor in self.service?.reportOutboundOpenComplete(status: error) }
         guard error == kIOReturnSuccess, let rfcommChannel else { return }
@@ -505,6 +547,7 @@ final class BluetoothService: ObservableObject {
     func loadPairedDevices() {}
     func connect(address: String, channel: UInt8? = nil, userInitiated: Bool = false) {}
     func disconnect(address: String) {}
+    func teardownStaleLink(address: String) {}
 }
 
 #endif

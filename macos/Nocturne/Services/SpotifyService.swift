@@ -15,13 +15,13 @@ final class SpotifyService: ObservableObject, SpotifyCommandHandling {
     private let dealer: SpotifyDealerSocket
     private(set) var cachedPlayerState: [String: Any]?
 
-    init() {
+    init(auth: AuthService) {
         let getUserID: () -> String? = {
             SessionStore.shared.loadSupabaseTokens()
                 .flatMap { SpotifyCredentialCrypto.userID(fromJWT: $0.accessToken) }
         }
-        let storage = SpotifyDatabaseStorage(accessTokenProvider: {
-            SessionStore.shared.loadSupabaseTokens()?.accessToken
+        let storage = SpotifyDatabaseStorage(accessTokenProvider: { forceRefresh in
+            try await auth.validAccessToken(forceRefresh: forceRefresh)
         })
         let core = SpotifyCore(storage: storage, getUserID: getUserID)
         self.core = core

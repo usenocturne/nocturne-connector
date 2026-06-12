@@ -86,6 +86,18 @@ grants). Behavior notes:
   listen-only Mac deadlocks after a device restart).
 - **Pairing is never app-driven** — users pair in System Settings → Bluetooth;
   the app only watches the bond list and manages RFCOMM to bonded Car Things.
+- **Links self-heal.** Two consecutive missed keep-alive pings (15s apart, 30s
+  RPC timeout) tear the link down — including the baseband ACL — so the 3s
+  sweep redials; this recovers channels whose close was never delivered (Mac
+  sleep, abrupt device power-off).
+- **Auth must survive overnight network flaps.** The Supabase session JWT is
+  refreshed ahead of expiry and on demand (with a forced retry on PostgREST
+  401); only a definitive token rejection signs out — never a network error.
+  Spotify refresh-token rotations that can't be persisted are retried in the
+  background until they land (a rotated token existing only in memory must not
+  be lost), and `invalid_grant` retries only when the database holds a
+  *different* refresh token. Violating any of these bricks the Spotify grant
+  and the Car Thing UI then looks "disconnected" even though RFCOMM is fine.
 
 ## SERVER ↔ CLIENT WIRE CONTRACT
 

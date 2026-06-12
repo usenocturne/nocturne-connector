@@ -61,6 +61,12 @@ final class SpotifyCore {
                     try await self.refreshToken()
                     self.log.info("Periodic Spotify token refresh succeeded")
                 } catch {
+                    if error is SpotifyAuthorizationExpiredError {
+                        self.log.error("Periodic refresh: Spotify authorization expired; marking unlinked")
+                        self.cachedCredentials = nil
+                        self.setAuthState(.idle)
+                        return
+                    }
                     self.log.warning("Periodic Spotify token refresh failed: \(error.localizedDescription, privacy: .public)")
                 }
             }
@@ -282,6 +288,9 @@ final class SpotifyCore {
         stopPolling()
         stopTokenRefreshTimer()
         cancelAuthCheckRetry()
+        persistRetryTask?.cancel()
+        persistRetryTask = nil
+        persistGeneration += 1
         if let userID = getUserID() {
             do { try await storage.deleteCredentials(userID: userID) }
             catch { log.warning("Failed to delete credentials: \(error.localizedDescription, privacy: .public)") }
@@ -330,11 +339,14 @@ final class SpotifyCore {
             if refreshToken == nil {
                 refreshToken = try await storage.loadCredentials(userID: userID).refreshToken
             }
+            guard let currentRefreshToken = refreshToken else {
+                throw SpotifyAPIError("No refresh token available")
+            }
 
             let body = formEncode([
                 "client_id": SpotifyConstants.spotifyClientID,
                 "grant_type": "refresh_token",
-                "refresh_token": refreshToken ?? "",
+                "refresh_token": currentRefreshToken,
             ])
 
             let maxNetworkRetries = 10
@@ -348,7 +360,9 @@ final class SpotifyCore {
                     break
                 } catch {
                     if attempt >= maxNetworkRetries { throw error }
-                    let delay = min(pow(2, Double(attempt)), 60)
+                    let indeterminate = [URLError.networkConnectionLost, .timedOut]
+                        .contains((error as? URLError)?.code)
+                    let delay = max(min(pow(2, Double(attempt)), 60), indeterminate ? 10 : 1)
                     log.warning("Token refresh network error (attempt \(attempt + 1, privacy: .public)/\(maxNetworkRetries, privacy: .public)), retrying in \(delay, privacy: .public)s: \(error.localizedDescription, privacy: .public)")
                     try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 }
@@ -359,12 +373,22 @@ final class SpotifyCore {
 
             if (json["error"] as? String) == "invalid_grant" {
                 if !hasRetriedInvalidGrant {
-                    log.warning("Got invalid_grant, clearing cache and retrying with fresh credentials from database")
                     hasRetriedInvalidGrant = true
-                    cachedCredentials = nil
-                    continue
+                    if let stored = try? await storage.loadCredentials(userID: userID),
+                       stored.refreshToken != currentRefreshToken {
+                        log.warning("Got invalid_grant; database holds different credentials, retrying with those")
+                        cachedCredentials = CachedCredentials(
+                            userID: userID,
+                            accessToken: stored.accessToken,
+                            refreshToken: stored.refreshToken,
+                            scope: stored.scope,
+                            tokenType: stored.tokenType,
+                            accessTokenExpiresAt: stored.accessTokenExpiresAt
+                        )
+                        continue
+                    }
                 }
-                log.error("Got invalid_grant after retry - authorization truly expired")
+                log.error("Got invalid_grant with no newer credentials available - authorization truly expired")
                 throw SpotifyAuthorizationExpiredError()
             }
             if let error = json["error"] as? String {
@@ -376,7 +400,7 @@ final class SpotifyCore {
                 throw SpotifyAPIError("Malformed token refresh response")
             }
             let expiresAt = Date().addingTimeInterval(TimeInterval(expiresIn))
-            let newRefreshToken = json["refresh_token"] as? String ?? refreshToken ?? ""
+            let newRefreshToken = json["refresh_token"] as? String ?? currentRefreshToken
             let scope = json["scope"] as? String ?? cachedCredentials?.scope
             let tokenType = json["token_type"] as? String ?? "Bearer"
 
@@ -388,11 +412,45 @@ final class SpotifyCore {
                 tokenType: tokenType,
                 accessTokenExpiresAt: expiresAt
             )
-            try await storage.saveCredentials(
-                accessToken: accessToken, refreshToken: newRefreshToken,
-                scope: scope, tokenType: tokenType, expiresAt: expiresAt, userID: userID
-            )
+            persistCachedCredentials()
             return
+        }
+    }
+
+    private var persistRetryTask: Task<Void, Never>?
+    private var persistGeneration = 0
+
+    private func persistCachedCredentials() {
+        persistRetryTask?.cancel()
+        persistGeneration += 1
+        let generation = persistGeneration
+        persistRetryTask = Task { @MainActor [weak self] in
+            var delay: TimeInterval = 0
+            while !Task.isCancelled {
+                if delay > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                }
+                guard let self, !Task.isCancelled,
+                      self.persistGeneration == generation,
+                      let creds = self.cachedCredentials else { return }
+                do {
+                    try await self.storage.saveCredentials(
+                        accessToken: creds.accessToken,
+                        refreshToken: creds.refreshToken,
+                        scope: creds.scope,
+                        tokenType: creds.tokenType,
+                        expiresAt: creds.accessTokenExpiresAt ?? Date(),
+                        userID: creds.userID
+                    )
+                    if delay > 0 {
+                        self.log.info("Deferred Spotify credential persist succeeded")
+                    }
+                    return
+                } catch {
+                    self.log.warning("Persisting Spotify credentials failed (will retry): \(error.localizedDescription, privacy: .public)")
+                    delay = min(max(delay * 2, 30), 300)
+                }
+            }
         }
     }
 

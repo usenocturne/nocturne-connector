@@ -11,23 +11,41 @@ struct SpotifyDatabaseCredentials {
 }
 
 final class SpotifyDatabaseStorage {
-    private let api = APIClient()
-    private let accessTokenProvider: () -> String?
+    typealias AccessTokenProvider = (_ forceRefresh: Bool) async throws -> String
 
-    init(accessTokenProvider: @escaping () -> String?) {
+    private let api = APIClient()
+    private let accessTokenProvider: AccessTokenProvider
+
+    init(accessTokenProvider: @escaping AccessTokenProvider) {
         self.accessTokenProvider = accessTokenProvider
     }
 
     private var restBase: String { SpotifyConstants.supabaseURL + "/rest/v1/spotify_credentials" }
 
-    private func headers() throws -> [String: String] {
-        guard let token = accessTokenProvider() else {
-            throw SpotifyAPIError("Not authenticated with Supabase")
+    private func headers(forceRefresh: Bool) async throws -> [String: String] {
+        let token: String
+        do {
+            token = try await accessTokenProvider(forceRefresh)
+        } catch {
+            throw SpotifyAPIError("Not authenticated with Supabase: \(error.localizedDescription)")
         }
         return [
             "apikey": SpotifyConstants.supabaseAnonKey,
             "Authorization": "Bearer \(token)",
         ]
+    }
+
+    private func authedRequest(
+        extraHeaders: [String: String] = [:],
+        _ run: ([String: String]) async throws -> (Data, HTTPURLResponse)
+    ) async throws -> (Data, HTTPURLResponse) {
+        var hdrs = try await headers(forceRefresh: false).merging(extraHeaders) { _, new in new }
+        var (data, http) = try await run(hdrs)
+        if http.statusCode == 401 {
+            hdrs = try await headers(forceRefresh: true).merging(extraHeaders) { _, new in new }
+            (data, http) = try await run(hdrs)
+        }
+        return (data, http)
     }
 
     func saveCredentials(
@@ -46,13 +64,11 @@ final class SpotifyDatabaseStorage {
             "token_type": tokenType,
             "access_token_expires_at": SpotifyCredentialCrypto.isoFormatter.string(from: expiresAt),
         ]
-        var hdrs = try headers()
-        hdrs["Prefer"] = "resolution=merge-duplicates"
         let url = URL(string: restBase + "?on_conflict=user_id")!
-        let (data, http) = try await api.request(
-            url, method: "POST", headers: hdrs,
-            body: SpotifyJSON.encode(payload), contentType: "application/json"
-        )
+        let body = SpotifyJSON.encode(payload)
+        let (data, http) = try await authedRequest(extraHeaders: ["Prefer": "resolution=merge-duplicates"]) { hdrs in
+            try await self.api.request(url, method: "POST", headers: hdrs, body: body, contentType: "application/json")
+        }
         guard (200..<300).contains(http.statusCode) else {
             throw SpotifyAPIError("Database error: \(String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)")")
         }
@@ -79,7 +95,9 @@ final class SpotifyDatabaseStorage {
             URLQueryItem(name: "select", value: "*"),
             URLQueryItem(name: "user_id", value: "eq.\(userID)"),
         ]
-        let (data, http) = try await api.request(comp.url!, headers: try headers())
+        let (data, http) = try await authedRequest { hdrs in
+            try await self.api.request(comp.url!, headers: hdrs)
+        }
         guard (200..<300).contains(http.statusCode) else {
             throw SpotifyAPIError("Database error: \(String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)")")
         }
@@ -107,7 +125,9 @@ final class SpotifyDatabaseStorage {
     func deleteCredentials(userID: String) async throws {
         var comp = URLComponents(string: restBase)!
         comp.queryItems = [URLQueryItem(name: "user_id", value: "eq.\(userID)")]
-        let (data, http) = try await api.request(comp.url!, method: "DELETE", headers: try headers())
+        let (data, http) = try await authedRequest { hdrs in
+            try await self.api.request(comp.url!, method: "DELETE", headers: hdrs)
+        }
         guard (200..<300).contains(http.statusCode) else {
             throw SpotifyAPIError("Database error: \(String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)")")
         }

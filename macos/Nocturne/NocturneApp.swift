@@ -18,10 +18,13 @@ struct NocturneApp: App {
     init() {
         FontLoader.registerBundledFonts()
         let auth = AuthService()
-        let spotify = SpotifyService()
+        let spotify = SpotifyService(auth: auth)
         let rpcManager = RPCManager(spotify: spotify)
         let bluetooth = BluetoothService()
         bluetooth.rpcManager = rpcManager
+        rpcManager.onStaleConnection = { [weak bluetooth] address in
+            bluetooth?.teardownStaleLink(address: address)
+        }
         _auth = StateObject(wrappedValue: auth)
         _spotify = StateObject(wrappedValue: spotify)
         _bluetooth = StateObject(wrappedValue: bluetooth)
