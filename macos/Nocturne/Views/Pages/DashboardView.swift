@@ -170,10 +170,7 @@ struct DashboardView: View {
 
                 Spacer(minLength: 16)
 
-                Button(state.actionLabel) {
-                    bluetooth.connect(address: device.address, userInitiated: true)
-                }
-                .buttonStyle(.web(state.actionProminent ? .primary : .outline, size: .sm))
+                WebBadge(text: state.badgeText, variant: state.badgeVariant)
             }
         }
     }
@@ -272,15 +269,23 @@ private extension BluetoothService.PeerConnectability {
         case .connected:
             return "Connected"
         case .unknown:
-            return "Paired — waiting for the Car Thing to open an RFCOMM channel"
+            return "Paired — waiting for the Car Thing to request the connector"
         }
     }
-    var actionLabel: String {
-        if case .rejecting = self { return "Try again" }
-        return "Retry"
+    var badgeText: String {
+        switch self {
+        case .rejecting:  return "Needs Probe"
+        case .connecting: return "Responding"
+        case .connected:  return "Connected"
+        case .unknown:    return "Waiting"
+        }
     }
-    var actionProminent: Bool {
-        if case .rejecting = self { return true }
-        return false
+    var badgeVariant: BadgeVariant {
+        switch self {
+        case .rejecting:  return .destructive
+        case .connecting: return .accent
+        case .connected:  return .success
+        case .unknown:    return .outline
+        }
     }
 }

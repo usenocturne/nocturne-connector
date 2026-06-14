@@ -189,7 +189,7 @@ final class RPCManager: ObservableObject {
                     }
                 }
                 for address in staleAddresses {
-                    self.log.error("RPC link to \(address, privacy: .public) is unresponsive; tearing it down for redial")
+                    self.log.error("RPC link to \(address, privacy: .public) is unresponsive; tearing it down until the next Car Thing probe")
                     self.onStaleConnection?(address)
                 }
                 await self.broadcastToDevices(topic: "spotify.auth.status", data: .map([

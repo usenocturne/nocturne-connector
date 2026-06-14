@@ -23,8 +23,6 @@ final class BluetoothService: ObservableObject {
         case connected
         case rejecting(since: Date)
     }
-    private let peerCooldown: TimeInterval = 60
-    private var lastRejectionAt: [String: Date] = [:]
 
     weak var rpcManager: RPCManager?
 
@@ -33,11 +31,12 @@ final class BluetoothService: ObservableObject {
     private func channelKey(address: String, id: BluetoothRFCOMMChannelID) -> String {
         "\(address)#\(id)"
     }
-    private let server = RFCOMMServer()
+    private let probeListener = SerialProbeListener()
+    private var recentProbePeer: (address: String, seenAt: Date)?
 
-    var serverChannel: BluetoothRFCOMMChannelID { server.registeredChannel }
+    var serverChannel: BluetoothRFCOMMChannelID { probeListener.registeredChannel }
 
-    var serverError: String? { server.lastRegistrationError }
+    var serverError: String? { probeListener.lastError }
 
     func republishSPPService() {
         startSPPServer()
@@ -50,12 +49,9 @@ final class BluetoothService: ObservableObject {
         bridge = BluetoothDelegateBridge(service: self)
         refreshAdapterStatus()
         loadPairedDevices()
-        startSPPServer()
-
-        connectNotification = IOBluetoothDevice.register(
-            forConnectNotifications: bridge,
-            selector: #selector(BluetoothDelegateBridge.deviceACLConnected(_:device:))
-        )
+        DispatchQueue.main.async { [weak self] in
+            self?.startBluetoothNotifications()
+        }
 
         Task { @MainActor [weak self] in
             while true {
@@ -63,72 +59,50 @@ final class BluetoothService: ObservableObject {
                 guard let self else { return }
                 self.refreshAdapterStatus()
                 self.loadPairedDevices()
-                self.resyncCarThingLinks()
             }
         }
     }
 
-    private func resyncCarThingLinks() {
-        guard status.powered else { return }
-        for d in devices where d.paired && Self.looksLikeCarThing(name: d.name) {
-            guard !hasRPCChannel(d.address),
-                  !bondWatchers.contains(d.address),
-                  !inFlightConnects.contains(d.address) else { continue }
-            if let at = lastRejectionAt[d.address], Date().timeIntervalSince(at) < peerCooldown {
-                continue
-            }
-            connect(address: d.address)
-        }
+    private func startBluetoothNotifications() {
+        startSPPServer()
+
+        guard connectNotification == nil else { return }
+        connectNotification = IOBluetoothDevice.register(
+            forConnectNotifications: bridge,
+            selector: #selector(BluetoothDelegateBridge.deviceACLConnected(_:device:))
+        )
     }
 
     fileprivate func handleACLConnect(device: IOBluetoothDevice) {
         let address = device.addressString ?? ""
         guard Self.looksLikeCarThing(name: device.name ?? "") else { return }
         ingest(device: device)
-        if connections.contains(where: { $0.address == address }) { return }
-        guard !bondWatchers.contains(address) else { return }
-        bondWatchers.insert(address)
-        log.info("Car Thing ACL-connected (\(address, privacy: .public)); waiting for bond before dialing RPC")
-        Task { @MainActor in
-            defer { self.bondWatchers.remove(address) }
-            for _ in 0..<45 {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                guard let dev = IOBluetoothDevice(addressString: address),
-                      !self.connections.contains(where: { $0.address == address }) else { return }
-                if dev.isPaired() {
-                    self.ingest(device: dev)
-                    self.connect(address: address)
-                    return
-                }
-                if !dev.isConnected() { return }
-            }
-            self.log.info("ACL link from \(address, privacy: .public) never bonded; not dialing. Pair it in System Settings → Bluetooth.")
+        recentProbePeer = (address, Date())
+        log.info("Car Thing ACL-connected (\(address, privacy: .public)); waiting for RFCOMM probe")
+    }
+
+    private func startSPPServer() {
+        probeListener.onProbe = { [weak self] in
+            self?.handleSerialProbe()
+        }
+        probeListener.start()
+        if lastError?.contains("SPP") == true || lastError?.contains("Bluetooth is off") == true {
+            lastError = nil
         }
     }
 
-    private var bondWatchers = Set<String>()
-
-    private func startSPPServer() {
-        server.onIncomingChannel = { [weak self] channel in
-            guard let self else { return }
-            guard let device = channel.getDevice(), device.isPaired(),
-                  Self.looksLikeCarThing(name: device.name ?? "") else {
-                let addr = channel.getDevice()?.addressString ?? "?"
-                self.log.warning("Rejecting inbound RFCOMM from unpaired/unknown device \(addr, privacy: .public)")
-                channel.close()
-                return
-            }
-            channel.setDelegate(self.bridge)
-            self.handleChannelOpened(channel)
+    private func handleSerialProbe() {
+        loadPairedDevices()
+        let recent = recentProbePeer.flatMap { peer -> String? in
+            Date().timeIntervalSince(peer.seenAt) <= 15 ? peer.address : nil
         }
-        let ok = server.register(serviceName: "Nocturne Connector")
-        if !ok {
-            log.info("SDP publish unavailable; running outbound-only.")
-        } else {
-            if lastError?.contains("SPP") == true || lastError?.contains("Bluetooth is off") == true {
-                lastError = nil
-            }
+        guard let address = recent ?? carThingDevices.first?.address else {
+            lastError = "Car Thing requested the connector, but no paired Car Thing was found."
+            log.warning("Bluetooth-Incoming-Port probe arrived without a paired Car Thing address")
+            return
         }
+        log.info("Responding to Bluetooth-Incoming-Port probe from \(address, privacy: .public)")
+        respondToProbe(from: address)
     }
 
     func refreshAdapterStatus() {
@@ -172,18 +146,6 @@ final class BluetoothService: ObservableObject {
     }
 
     func connect(address: String, channel: BluetoothRFCOMMChannelID? = nil, userInitiated: Bool = false) {
-        if inFlightConnects.contains(address) {
-            log.info("connect(\(address, privacy: .public)) skipped — already in flight")
-            return
-        }
-        if !userInitiated, let at = lastRejectionAt[address], Date().timeIntervalSince(at) < peerCooldown {
-            let remaining = Int(peerCooldown - Date().timeIntervalSince(at))
-            log.info("connect(\(address, privacy: .public)) suppressed — peer rejected \(remaining, privacy: .public)s ago")
-            return
-        }
-        if userInitiated {
-            lastRejectionAt[address] = nil
-        }
         guard let device = IOBluetoothDevice(addressString: address) else {
             lastError = "Unknown device \(address)"
             return
@@ -193,16 +155,12 @@ final class BluetoothService: ObservableObject {
             log.info("connect(\(address, privacy: .public)) refused — device not bonded")
             return
         }
-        lastError = nil
-        peerConnectability[address] = .connecting
+        ingest(device: device)
+        peerConnectability[address] = hasRPCChannel(address) ? .connected : .unknown
         let chDesc = channel.map(String.init) ?? "auto"
-        log.info("connect(\(address, privacy: .public), channel: \(chDesc, privacy: .public))")
-
-        inFlightConnects.insert(address)
-        Task { [weak self] in
-            guard let self else { return }
-            await self.openRFCOMM(device: device, requestedChannel: channel, userInitiated: userInitiated)
-            self.inFlightConnects.remove(address)
+        log.info("connect(\(address, privacy: .public), channel: \(chDesc, privacy: .public)) ignored — waiting for Car Thing probe")
+        if userInitiated {
+            lastError = "Waiting for the Car Thing to request the connector link. Retry from the Car Thing if it does not connect."
         }
     }
 
@@ -218,48 +176,60 @@ final class BluetoothService: ObservableObject {
         waiter.resume(returning: status)
     }
 
-    private static let dialRounds = 8
-    private static let dialRoundDelay: UInt64 = 2_000_000_000
+    private static let probeResponseDelay: UInt64 = 500_000_000
 
-    private func openRFCOMM(
-        device: IOBluetoothDevice,
-        requestedChannel: BluetoothRFCOMMChannelID?,
-        userInitiated: Bool = false
-    ) async {
+    private func respondToProbe(from address: String) {
+        if inFlightConnects.contains(address) {
+            log.info("Probe response for \(address, privacy: .public) skipped — channel 2 dial already in flight")
+            return
+        }
+        guard let device = IOBluetoothDevice(addressString: address) else {
+            lastError = "Unknown device \(address)"
+            return
+        }
+        guard device.isPaired() else {
+            lastError = "\(device.name ?? address) isn't paired. Pair it in System Settings → Bluetooth first."
+            log.info("Probe response for \(address, privacy: .public) refused — device not bonded")
+            return
+        }
+        if hasRPCChannel(address) {
+            peerConnectability[address] = .connected
+            return
+        }
+
+        lastError = nil
+        peerConnectability[address] = .connecting
+        inFlightConnects.insert(address)
+        log.info("Responding to Car Thing probe from \(address, privacy: .public) by dialing RFCOMM channel 2")
+
+        Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: Self.probeResponseDelay)
+            await self.openRPCChannelForProbe(device: device)
+            self.inFlightConnects.remove(address)
+        }
+    }
+
+    private func openRPCChannelForProbe(device: IOBluetoothDevice) async {
         let addr = device.addressString ?? "?"
-        var candidates: [BluetoothRFCOMMChannelID] = []
+        if hasRPCChannel(addr) { return }
+        guard device.isPaired() else { return }
 
-        for round in 1...Self.dialRounds {
-            if hasRPCChannel(addr) { return }
-            guard device.isPaired() else { return }
-
-            if !device.isConnected() {
-                let r = await openBaseband(device: device)
-                log.info("openConnection(\(addr, privacy: .public)) -> \(r, privacy: .public) [round \(round, privacy: .public)/\(Self.dialRounds, privacy: .public)]")
-                if r != kIOReturnSuccess {
-                    try? await Task.sleep(nanoseconds: Self.dialRoundDelay)
-                    continue
-                }
-            }
-
-            if candidates.isEmpty {
-                candidates = await discoverCandidateChannels(device: device, requestedChannel: requestedChannel)
-                log.info("RFCOMM candidate channels for \(addr, privacy: .public): \(candidates, privacy: .public)")
-            }
-
-            if await dial(device: device, candidates: candidates) {
+        if !device.isConnected() {
+            let r = await openBaseband(device: device)
+            log.info("openConnection(\(addr, privacy: .public)) after probe -> \(r, privacy: .public)")
+            if r != kIOReturnSuccess {
+                peerConnectability[addr] = .rejecting(since: Date())
+                lastError = "Car Thing requested the connector, but the Mac could not reopen the Bluetooth link."
                 return
             }
-            log.info("RFCOMM dial round \(round, privacy: .public)/\(Self.dialRounds, privacy: .public) to \(addr, privacy: .public) failed")
-            try? await Task.sleep(nanoseconds: Self.dialRoundDelay)
         }
 
-        peerConnectability[addr] = .rejecting(since: Date())
-        lastRejectionAt[addr] = Date()
-        let hasInbound = activeChannels.keys.contains(where: { $0.hasPrefix("\(addr)#") })
-        if userInitiated && !hasInbound {
-            lastError = "Couldn't open the RPC channel to the Car Thing. Make sure it's paired in System Settings → Bluetooth and in range, then try again."
+        if await dial(device: device, candidates: [2]) {
+            return
         }
+        peerConnectability[addr] = .rejecting(since: Date())
+        lastError = "Car Thing requested the connector, but the Mac could not open RFCOMM channel 2."
     }
 
     private var basebandWaiters: [UUID: (address: String, cont: CheckedContinuation<IOReturn, Never>)] = [:]
@@ -290,42 +260,10 @@ final class BluetoothService: ObservableObject {
         }
     }
 
-    private func discoverCandidateChannels(
-        device: IOBluetoothDevice,
-        requestedChannel: BluetoothRFCOMMChannelID?
-    ) async -> [BluetoothRFCOMMChannelID] {
-        let addr = device.addressString ?? "?"
-        let sppUUID = IOBluetoothSDPUUID.uuid16(UInt16(kBluetoothSDPUUID16ServiceClassSerialPort.rawValue))
-        let sdpStatus: IOReturn = device.performSDPQuery(nil)
-        log.info("performSDPQuery(\(addr, privacy: .public)) -> \(sdpStatus, privacy: .public)")
-        var record = device.getServiceRecord(for: sppUUID)
-        for _ in 0..<15 {
-            if record != nil { break }
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            record = device.getServiceRecord(for: sppUUID)
-        }
-
-        var candidates: [BluetoothRFCOMMChannelID] = []
-        if let requested = requestedChannel { candidates.append(requested) }
-        if let record {
-            var ch: BluetoothRFCOMMChannelID = 0
-            if record.getRFCOMMChannelID(&ch) == kIOReturnSuccess,
-               !candidates.contains(ch),
-               ch != server.registeredChannel {
-                candidates.append(ch)
-            }
-        }
-        for fallback: BluetoothRFCOMMChannelID in [2, 3]
-            where !candidates.contains(fallback) && fallback != server.registeredChannel {
-            candidates.append(fallback)
-        }
-        return candidates
-    }
-
     private func hasRPCChannel(_ address: String) -> Bool {
         activeChannels.keys.contains {
             $0.hasPrefix("\(address)#")
-                && $0 != channelKey(address: address, id: server.registeredChannel)
+                && $0 != channelKey(address: address, id: probeListener.registeredChannel)
         }
     }
 
@@ -385,7 +323,7 @@ final class BluetoothService: ObservableObject {
     }
 
     func teardownStaleLink(address: String) {
-        log.warning("Tearing down unresponsive link to \(address, privacy: .public); resync will redial")
+        log.warning("Tearing down unresponsive link to \(address, privacy: .public); waiting for the next Car Thing probe")
         disconnect(address: address)
         if let device = IOBluetoothDevice(addressString: address), device.isConnected() {
             device.closeConnection()
@@ -424,16 +362,14 @@ final class BluetoothService: ObservableObject {
         channel.setDelegate(bridge)
         activeChannels[key] = channel
 
-        if chID == server.registeredChannel,
-           activeChannels[channelKey(address: address, id: 2)] == nil {
-            log.info("Inbound ch=\(chID, privacy: .public) detected; opening outbound ch 2 for RPC")
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                connect(address: address, channel: 2)
+        if chID == probeListener.registeredChannel {
+            if activeChannels[channelKey(address: address, id: 2)] == nil {
+                respondToProbe(from: address)
             }
+            return
         }
 
-        let devicePath = "rfcomm-\(chID == 1 ? "server" : "client"):\(address)"
+        let devicePath = "rfcomm-client:\(address)"
         let conn = BTConnection(
             devicePath: devicePath,
             address: address,
@@ -446,17 +382,14 @@ final class BluetoothService: ObservableObject {
             devices[idx].connected = true
         }
         peerConnectability[address] = .connected
-        lastRejectionAt[address] = nil
         lastError = nil
 
-        if chID != server.registeredChannel {
-            rpcManager?.attach(channel: channel, address: address)
-        }
+        rpcManager?.attach(channel: channel, address: address)
     }
 
     fileprivate func handleChannelData(_ channel: IOBluetoothRFCOMMChannel, data: Data) {
         guard let device = channel.getDevice(), let address = device.addressString else { return }
-        if channel.getID() == server.registeredChannel {
+        if channel.getID() == probeListener.registeredChannel {
             return
         }
         rpcManager?.ingest(data, channel: channel, address: address)
@@ -469,7 +402,7 @@ final class BluetoothService: ObservableObject {
         rpcManager?.detach(channel: channel, address: address)
         log.info("RFCOMM channel closed: \(address, privacy: .public) ch=\(chID, privacy: .public)")
 
-        if chID != server.registeredChannel {
+        if chID != probeListener.registeredChannel {
             let staleKeys = activeChannels.keys.filter { $0.hasPrefix("\(address)#") }
             for key in staleKeys {
                 if let ch = activeChannels.removeValue(forKey: key) {
@@ -484,9 +417,9 @@ final class BluetoothService: ObservableObject {
             if let idx = devices.firstIndex(where: { $0.address == address }) {
                 devices[idx].connected = false
             }
-            peerConnectability[address] = .unknown
+            peerConnectability[address] = inFlightConnects.contains(address) ? .connecting : .unknown
         } else {
-            let devicePath = "rfcomm-\(chID == 1 ? "server" : "client"):\(address)"
+            let devicePath = "rfcomm-client:\(address)"
             connections.removeAll { $0.devicePath == devicePath }
         }
     }

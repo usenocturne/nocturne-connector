@@ -47,10 +47,7 @@ struct BluetoothPairingView: View {
                     SectionLabel(text: "Paired Devices")
                     VStack(spacing: 8) {
                         ForEach(bluetooth.carThingDevices) { device in
-                            DeviceCard(
-                                device: device,
-                                onConnect: { bluetooth.connect(address: device.address, userInitiated: true) }
-                            )
+                            DeviceCard(device: device)
                         }
                     }
                     Text("To unpair, remove the device in System Settings → Bluetooth.")
@@ -154,7 +151,6 @@ struct BluetoothPairingView: View {
 
 private struct DeviceCard: View {
     let device: BTDeviceInfo
-    let onConnect: () -> Void
 
     var body: some View {
         Card {
@@ -175,8 +171,7 @@ private struct DeviceCard: View {
                 Spacer()
                 if device.paired {
                     if !device.connected {
-                        Button("Connect", action: onConnect)
-                            .buttonStyle(.web(.outline, size: .sm))
+                        WebBadge(text: "Waiting", variant: .outline)
                     }
                 } else {
                     Text("Waiting for pairing in System Settings…")

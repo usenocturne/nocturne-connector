@@ -79,17 +79,18 @@ grants). Behavior notes:
   Once setup is complete, every launch is background-only: no window, accessory
   activation policy, menu bar icon (dimmed = disconnected). The window opens
   from the menu bar panel or by reopening the app; closing it returns the app
-  to menu-bar-only. The connector must keep running windowless — reconnection
-  is two-sided: the Mac answers the Car Thing's ACL probes AND proactively
-  redials bonded Car Things' RFCOMM channel 2 on a 3s sweep (the device's own
-  iAP2 probe times out at 5s and then waits for the host to dial in, so a
-  listen-only Mac deadlocks after a device restart).
+  to menu-bar-only. The connector must keep running windowless. Reconnection is
+  Car Thing-triggered: the daemon opens a short RFCOMM probe to the Mac's
+  Bluetooth-Incoming-Port listener on channel `3`. The Mac responds to that inbound
+  probe by dialing the Car Thing's SPP/RPC channel `2`. The Mac must not sweep
+  paired Car Things or initiate Bluetooth connects on its own.
 - **Pairing is never app-driven** — users pair in System Settings → Bluetooth;
   the app only watches the bond list and manages RFCOMM to bonded Car Things.
 - **Links self-heal.** Two consecutive missed keep-alive pings (15s apart, 30s
-  RPC timeout) tear the link down — including the baseband ACL — so the 3s
-  sweep redials; this recovers channels whose close was never delivered (Mac
-  sleep, abrupt device power-off).
+  RPC timeout) tear the link down — including the baseband ACL — and then wait
+  for the next Car Thing probe. This recovers channels whose close was never
+  delivered (Mac sleep, abrupt device power-off) without the Mac polling the Car
+  Thing address.
 - **Auth must survive overnight network flaps.** The Supabase session JWT is
   refreshed ahead of expiry and on demand (with a forced retry on PostgREST
   401); only a definitive token rejection signs out — never a network error.
