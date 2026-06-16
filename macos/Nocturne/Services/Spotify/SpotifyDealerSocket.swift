@@ -27,6 +27,7 @@ final class SpotifyDealerSocket {
 
     private let getAccessToken: () async throws -> String
     private let setSpclientEndpoint: (String) -> Void
+    private let deviceID = SpotifyConnectIdentity.dealerDeviceID
 
     private var ws: URLSessionWebSocketTask?
     private var session: URLSession
@@ -54,6 +55,11 @@ final class SpotifyDealerSocket {
     private let connectionTimeout: TimeInterval = 180
     private let playerEventStaleTimeout: TimeInterval = 90
     private let tokenRefreshInterval: TimeInterval = 50 * 60
+
+    var connectStateRegistration: SpotifyConnectStateRegistration? {
+        guard let connectionId, !connectionId.isEmpty else { return nil }
+        return SpotifyConnectStateRegistration(deviceID: deviceID, connectionID: connectionId)
+    }
 
     init(
         getAccessToken: @escaping () async throws -> String,
@@ -229,8 +235,7 @@ final class SpotifyDealerSocket {
         guard let connectionId, let spclientEndpoint else { return }
 
         let accessToken = try await getAccessToken()
-        let deviceId = (0..<40).map { _ in String(Int.random(in: 0..<16), radix: 16) }.joined()
-        let hobsId = "hobs_\(deviceId)"
+        let hobsId = SpotifyConnectIdentity.hobsID(for: deviceID)
 
         var request = URLRequest(url: URL(string: "https://\(spclientEndpoint)/connect-state/v1/devices/\(hobsId)")!)
         request.httpMethod = "PUT"

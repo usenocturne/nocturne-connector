@@ -14,6 +14,7 @@ final class SpotifyService: ObservableObject, SpotifyCommandHandling {
     private let registry: SpotifyCommandRegistry
     private let dealer: SpotifyDealerSocket
     private(set) var cachedPlayerState: [String: Any]?
+    private var cachedPlayerStateAt: Date?
 
     init(auth: AuthService) {
         let getUserID: () -> String? = {
@@ -26,10 +27,14 @@ final class SpotifyService: ObservableObject, SpotifyCommandHandling {
         let core = SpotifyCore(storage: storage, getUserID: getUserID)
         self.core = core
         self.registry = SpotifyCommandRegistry(core: core)
-        self.dealer = SpotifyDealerSocket(
+        let dealer = SpotifyDealerSocket(
             getAccessToken: { try await core.getValidAccessToken() },
             setSpclientEndpoint: { core.spclientEndpoint = $0 }
         )
+        self.dealer = dealer
+        core.connectStateRegistrationProvider = { [weak dealer] in
+            dealer?.connectStateRegistration
+        }
 
         dealer.onPlayerEvent = { [weak self] event in
             self?.handleDealerEvent(event)
@@ -86,7 +91,24 @@ final class SpotifyService: ObservableObject, SpotifyCommandHandling {
     }
 
     func dispatch(_ method: String, params: [String: Any]) async throws -> Any? {
-        try await registry.dispatch(method, params: params)
+        if method == "spotify.player.state" {
+            do {
+                let result = try await registry.dispatch(method, params: params)
+                if Self.hasUsablePlaybackItem(result) {
+                    return result
+                }
+                return cachedPlaybackSnapshot() ?? result
+            } catch {
+                if error is SpotifyNotAuthenticatedError || error is SpotifyAuthorizationExpiredError {
+                    throw error
+                }
+                if let cached = cachedPlaybackSnapshot() {
+                    return cached
+                }
+                throw error
+            }
+        }
+        return try await registry.dispatch(method, params: params)
     }
 
     private func handleDealerEvent(_ event: [String: Any]) {
@@ -108,10 +130,28 @@ final class SpotifyService: ObservableObject, SpotifyCommandHandling {
               let cluster = (payloads.first as? [String: Any])?["cluster"] as? [String: Any] else { return }
         if cluster["player_state"] != nil {
             cachedPlayerState = cluster
+            cachedPlayerStateAt = Date()
         }
         if let activeDeviceId = cluster["active_device_id"] as? String {
             core.activeDeviceId = activeDeviceId
         }
+    }
+
+    private func cachedPlaybackSnapshot(maxAge: TimeInterval = 180) -> Any? {
+        guard let cachedPlayerState,
+              let cachedPlayerStateAt,
+              Date().timeIntervalSince(cachedPlayerStateAt) <= maxAge else { return nil }
+        let transformed = core.transformConnectState(cachedPlayerState)
+        return Self.hasUsablePlaybackItem(transformed) ? transformed : nil
+    }
+
+    private static func hasUsablePlaybackItem(_ value: Any?) -> Bool {
+        guard let playback = value as? [String: Any],
+              let item = playback["item"] as? [String: Any],
+              let uri = item["uri"] as? String,
+              !uri.isEmpty else { return false }
+        let name = (item["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return !name.isEmpty
     }
 
     private func enrichTrackMetadata(_ data: inout [String: Any]) async {

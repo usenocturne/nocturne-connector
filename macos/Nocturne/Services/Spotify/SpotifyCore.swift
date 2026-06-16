@@ -1,6 +1,46 @@
 import Foundation
 import os
 
+struct SpotifyConnectStateRegistration {
+    let deviceID: String
+    let connectionID: String
+}
+
+enum SpotifyConnectIdentity {
+    private static let dealerDeviceIDKey = "com.usenocturne.nocturne.spotify.dealerDeviceID"
+    private static let snapshotDeviceIDKey = "com.usenocturne.nocturne.spotify.snapshotDeviceID"
+    private static let connectionIDAlphabet = Array("abcdefghijklmnopqrstuvwxyz0123456789")
+
+    static let dealerDeviceID = persistedDeviceID(forKey: dealerDeviceIDKey)
+    static let snapshotDeviceID = persistedDeviceID(forKey: snapshotDeviceIDKey)
+
+    static func hobsID(for deviceID: String) -> String {
+        "hobs_\(deviceID)"
+    }
+
+    static func randomHobsID() -> String {
+        hobsID(for: randomHexID())
+    }
+
+    static func randomConnectionID() -> String {
+        String((0..<148).map { _ in connectionIDAlphabet.randomElement()! })
+    }
+
+    private static func persistedDeviceID(forKey key: String) -> String {
+        if let existing = UserDefaults.standard.string(forKey: key),
+           existing.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil {
+            return existing
+        }
+        let new = randomHexID()
+        UserDefaults.standard.set(new, forKey: key)
+        return new
+    }
+
+    private static func randomHexID() -> String {
+        (0..<40).map { _ in String(Int.random(in: 0..<16), radix: 16) }.joined()
+    }
+}
+
 @MainActor
 final class SpotifyCore {
     private static let tokenRefreshInterval: TimeInterval = 30 * 60
@@ -35,6 +75,7 @@ final class SpotifyCore {
     var spclientEndpoint: String?
     var activeDeviceId: String?
     var spotifyUserId: String?
+    var connectStateRegistrationProvider: (() -> SpotifyConnectStateRegistration?)?
 
     init(storage: SpotifyDatabaseStorage, getUserID: @escaping () -> String?) {
         self.storage = storage
@@ -549,12 +590,11 @@ final class SpotifyCore {
     var spclientHost: String { spclientEndpoint ?? "gue1-spclient.spotify.com" }
 
     static func hobsID() -> String {
-        "hobs_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        SpotifyConnectIdentity.randomHobsID()
     }
 
     static func randomConnectionID() -> String {
-        let alphabet = Array("abcdefghijklmnopqrstuvwxyz0123456789")
-        return String((0..<148).map { _ in alphabet.randomElement()! })
+        SpotifyConnectIdentity.randomConnectionID()
     }
 
     func formEncode(_ params: [String: String]) -> Data {
@@ -584,6 +624,9 @@ final class SpotifyCore {
 
     func fetchConnectState() async throws -> [String: Any]? {
         let accessToken = try await getValidAccessToken()
+        let registration = connectStateRegistrationProvider?()
+        let deviceID = registration?.deviceID ?? SpotifyConnectIdentity.snapshotDeviceID
+        let connectionID = registration?.connectionID ?? SpotifyConnectIdentity.randomConnectionID()
         let payload: [String: Any] = [
             "member_type": "CONNECT_STATE",
             "device": ["device_info": ["capabilities": [
@@ -591,12 +634,12 @@ final class SpotifyCore {
             ]]],
         ]
         let (data, http) = try await api.request(
-            URL(string: "https://\(spclientHost)/connect-state/v1/devices/\(Self.hobsID())")!,
+            URL(string: "https://\(spclientHost)/connect-state/v1/devices/\(SpotifyConnectIdentity.hobsID(for: deviceID))")!,
             method: "PUT",
             headers: [
                 "Authorization": "Bearer \(accessToken)",
                 "Accept": "application/json",
-                "X-Spotify-Connection-Id": Self.randomConnectionID(),
+                "X-Spotify-Connection-Id": connectionID,
             ],
             body: SpotifyJSON.encode(payload),
             contentType: "application/json"

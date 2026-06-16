@@ -99,6 +99,12 @@ grants). Behavior notes:
   be lost), and `invalid_grant` retries only when the database holds a
   *different* refresh token. Violating any of these bricks the Spotify grant
   and the Car Thing UI then looks "disconnected" even though RFCOMM is fine.
+- **Spotify Connect identity is stable.** The macOS Dealer registers one
+  persisted hidden `hobs_*` device ID and `spotify.player.state` snapshot reads
+  reuse the live Dealer `Spotify-Connection-Id` when available. Do not create a
+  new hidden Connect-state device for every reconnect or state fetch; stale
+  throwaway peers can make the Car Thing UI fall back to "Not Playing" while
+  Spotify is still active.
 
 ## SERVER ↔ CLIENT WIRE CONTRACT
 
