@@ -14,7 +14,7 @@ struct SpotifyAuthorizationExpiredError: LocalizedError {
 }
 
 private func isTerminalAuthError(_ error: Error) -> Bool {
-    error is SpotifyNotAuthenticatedError || error is SpotifyAuthorizationExpiredError
+    error is SpotifyAuthorizationExpiredError
 }
 
 @MainActor
@@ -336,6 +336,26 @@ final class SpotifyDealerSocket {
     private func stopTokenRefreshTimer() {
         tokenRefreshTask?.cancel()
         tokenRefreshTask = nil
+    }
+
+    func recoverAfterWake() async {
+        if isConnecting { return }
+        shouldMaintainConnection = true
+        do {
+            if isConnected {
+                try await reconnect()
+            } else {
+                try await connect()
+            }
+        } catch {
+            log.error("Wake recovery failed: \(error.localizedDescription, privacy: .public)")
+            if isTerminalAuthError(error) {
+                log.warning("Wake recovery aborted: Spotify authorization expired.")
+                disconnect()
+            } else if shouldMaintainConnection {
+                scheduleReconnect()
+            }
+        }
     }
 
     private func handleConnectionError(_ error: Error) {

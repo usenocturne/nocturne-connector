@@ -28,8 +28,7 @@ final class AuthService: ObservableObject {
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { _ in
             Task { @MainActor [weak self] in
-                guard let self, self.store.loadSupabaseTokens() != nil else { return }
-                self.startRefreshLoop()
+                await self?.recoverAfterWake()
             }
         }
     }
@@ -151,6 +150,17 @@ final class AuthService: ObservableObject {
         return fresh.accessToken
     }
 
+    func recoverAfterWake() async {
+        guard store.loadSupabaseTokens() != nil else { return }
+        do {
+            _ = try await validAccessToken(forceRefresh: true)
+        } catch {
+            guard store.loadSupabaseTokens() != nil else { return }
+            log.warning("Wake session refresh failed; refresh loop will keep retrying: \(error.localizedDescription, privacy: .public)")
+        }
+        startRefreshLoop()
+    }
+
     private func startRefreshLoop() {
         stopRefreshLoop()
         refreshLoopTask = Task { @MainActor [weak self] in
@@ -236,9 +246,7 @@ final class AuthService: ObservableObject {
 
     private static func isDefinitiveAuthFailure(_ statusCode: Int, message: String?) -> Bool {
         guard statusCode == 400 || statusCode == 401 || statusCode == 403 else { return false }
-        guard let msg = message?.lowercased(), !msg.isEmpty else {
-            return statusCode == 401 || statusCode == 403
-        }
+        guard let msg = message?.lowercased(), !msg.isEmpty else { return false }
         return ["refresh", "invalid", "not found", "expired", "revoked", "already used"]
             .contains { msg.contains($0) }
     }

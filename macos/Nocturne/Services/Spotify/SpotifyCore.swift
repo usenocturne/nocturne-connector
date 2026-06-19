@@ -82,6 +82,30 @@ final class SpotifyCore {
         self.getUserID = getUserID
     }
 
+    private func cachedCredentials(from credentials: SpotifyDatabaseCredentials, userID: String) -> CachedCredentials {
+        CachedCredentials(
+            userID: userID,
+            accessToken: credentials.accessToken,
+            refreshToken: credentials.refreshToken,
+            scope: credentials.scope,
+            tokenType: credentials.tokenType,
+            accessTokenExpiresAt: credentials.accessTokenExpiresAt
+        )
+    }
+
+    private func adoptStoredCredentialsIfNewer(_ credentials: SpotifyDatabaseCredentials, userID: String) {
+        let stored = cachedCredentials(from: credentials, userID: userID)
+        guard let cached = cachedCredentials, cached.userID == userID else {
+            cachedCredentials = stored
+            return
+        }
+
+        let cachedExpiry = cached.accessTokenExpiresAt ?? .distantPast
+        if credentials.accessTokenExpiresAt > cachedExpiry {
+            cachedCredentials = stored
+        }
+    }
+
     func setAuthState(_ state: SpotifyAuthState) {
         authState = state
         if case .linked = state {
@@ -132,7 +156,7 @@ final class SpotifyCore {
         return spotifyUserId
     }
 
-    func checkAuthStatus() async {
+    func checkAuthStatus(forceRefresh: Bool = false) async {
         authCheckRetryTask?.cancel()
         authCheckRetryTask = nil
 
@@ -145,18 +169,12 @@ final class SpotifyCore {
         authCheckAttempts += 1
         do {
             let credentials = try await storage.loadCredentials(userID: userID)
-            let needsRefresh = credentials.accessTokenExpiresAt.timeIntervalSinceNow < 300
+            adoptStoredCredentialsIfNewer(credentials, userID: userID)
+
+            let activeExpiresAt = cachedCredentials?.accessTokenExpiresAt ?? credentials.accessTokenExpiresAt
+            let needsRefresh = forceRefresh || activeExpiresAt.timeIntervalSinceNow < 300
             if needsRefresh {
                 try await refreshToken()
-            } else {
-                cachedCredentials = CachedCredentials(
-                    userID: userID,
-                    accessToken: credentials.accessToken,
-                    refreshToken: credentials.refreshToken,
-                    scope: credentials.scope,
-                    tokenType: credentials.tokenType,
-                    accessTokenExpiresAt: credentials.accessTokenExpiresAt
-                )
             }
 
             let displayName = await getSpotifyDisplayName()
@@ -356,7 +374,9 @@ final class SpotifyCore {
         }
 
         try await refreshToken()
-        guard let cached = cachedCredentials else { throw SpotifyAPIError("Failed to refresh token") }
+        guard let cached = cachedCredentials, cached.userID == userID else {
+            throw SpotifyAPIError("Failed to refresh token")
+        }
         return cached.accessToken
     }
 
@@ -376,8 +396,20 @@ final class SpotifyCore {
         var hasRetriedInvalidGrant = false
 
         while true {
-            var refreshToken = cachedCredentials?.refreshToken
+            var storedLoadError: Error?
+            do {
+                let stored = try await storage.loadCredentials(userID: userID)
+                adoptStoredCredentialsIfNewer(stored, userID: userID)
+            } catch {
+                storedLoadError = error
+            }
+
+            var refreshToken: String?
+            if let cached = cachedCredentials, cached.userID == userID {
+                refreshToken = cached.refreshToken
+            }
             if refreshToken == nil {
+                if let storedLoadError { throw storedLoadError }
                 refreshToken = try await storage.loadCredentials(userID: userID).refreshToken
             }
             guard let currentRefreshToken = refreshToken else {
@@ -415,18 +447,24 @@ final class SpotifyCore {
             if (json["error"] as? String) == "invalid_grant" {
                 if !hasRetriedInvalidGrant {
                     hasRetriedInvalidGrant = true
-                    if let stored = try? await storage.loadCredentials(userID: userID),
-                       stored.refreshToken != currentRefreshToken {
+                    do {
+                        let stored = try await storage.loadCredentials(userID: userID)
+                        if stored.refreshToken == currentRefreshToken {
+                            log.error("Got invalid_grant with no newer credentials available - authorization truly expired")
+                            throw SpotifyAuthorizationExpiredError()
+                        }
                         log.warning("Got invalid_grant; database holds different credentials, retrying with those")
-                        cachedCredentials = CachedCredentials(
-                            userID: userID,
-                            accessToken: stored.accessToken,
-                            refreshToken: stored.refreshToken,
-                            scope: stored.scope,
-                            tokenType: stored.tokenType,
-                            accessTokenExpiresAt: stored.accessTokenExpiresAt
-                        )
+                        cachedCredentials = cachedCredentials(from: stored, userID: userID)
                         continue
+                    } catch is SpotifyAuthorizationExpiredError {
+                        throw SpotifyAuthorizationExpiredError()
+                    } catch {
+                        if error.localizedDescription.contains("No credentials found") {
+                            log.error("Got invalid_grant and no stored credentials remain - authorization expired")
+                            throw SpotifyAuthorizationExpiredError()
+                        }
+                        log.warning("Got invalid_grant but could not verify stored Spotify credentials; treating as transient: \(error.localizedDescription, privacy: .public)")
+                        throw SpotifyAPIError("Spotify refresh rejected, but stored credentials could not be verified")
                     }
                 }
                 log.error("Got invalid_grant with no newer credentials available - authorization truly expired")

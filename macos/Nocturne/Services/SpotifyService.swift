@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import os
+import AppKit
 
 @MainActor
 final class SpotifyService: ObservableObject, SpotifyCommandHandling {
@@ -10,13 +11,16 @@ final class SpotifyService: ObservableObject, SpotifyCommandHandling {
 
     var onDeviceBroadcast: ((String, Any) -> Void)?
 
+    private let auth: AuthService
     private let core: SpotifyCore
     private let registry: SpotifyCommandRegistry
     private let dealer: SpotifyDealerSocket
     private(set) var cachedPlayerState: [String: Any]?
     private var cachedPlayerStateAt: Date?
+    private var wakeObserver: NSObjectProtocol?
 
     init(auth: AuthService) {
+        self.auth = auth
         let getUserID: () -> String? = {
             SessionStore.shared.loadSupabaseTokens()
                 .flatMap { SpotifyCredentialCrypto.userID(fromJWT: $0.accessToken) }
@@ -54,6 +58,20 @@ final class SpotifyService: ObservableObject, SpotifyCommandHandling {
                 self.dealer.disconnect()
             }
         }
+
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { _ in
+            Task { @MainActor [weak self] in
+                await self?.recoverAfterWake()
+            }
+        }
+    }
+
+    deinit {
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+        }
     }
 
     var isSpotifyLinked: Bool {
@@ -84,6 +102,14 @@ final class SpotifyService: ObservableObject, SpotifyCommandHandling {
 
     func checkAuthStatus() async {
         await core.checkAuthStatus()
+    }
+
+    func recoverAfterWake() async {
+        log.info("Mac woke; reconciling Spotify auth and Dealer socket")
+        await auth.recoverAfterWake()
+        await core.checkAuthStatus(forceRefresh: true)
+        guard isSpotifyLinked else { return }
+        await dealer.recoverAfterWake()
     }
 
     func supports(_ method: String) -> Bool {
