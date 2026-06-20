@@ -80,10 +80,12 @@ grants). Behavior notes:
   activation policy, menu bar icon (dimmed = disconnected). The window opens
   from the menu bar panel or by reopening the app; closing it returns the app
   to menu-bar-only. The connector must keep running windowless. Reconnection is
-  Car Thing-triggered: the daemon opens a short RFCOMM probe to the Mac's
+  probe-first: the daemon opens a short RFCOMM probe to the Mac's
   Bluetooth-Incoming-Port listener on channel `3`. The Mac responds to that inbound
-  probe by dialing the Car Thing's SPP/RPC channel `2`. The Mac must not sweep
-  paired Car Things or initiate Bluetooth connects on its own.
+  probe by dialing the Car Thing's SPP/RPC channel `2`. macOS can report only the
+  baseband ACL as "Connected" before the probe callback arrives; in that exact
+  paired-Car-Thing/no-RFCOMM state, the Mac may make a bounded channel-2 fallback
+  like the Pi connector. Do not add background sweeps of paired Car Things.
 - **Pairing is never app-driven** — users pair in System Settings → Bluetooth;
   the app only watches the bond list and manages RFCOMM to bonded Car Things.
 - **Links self-heal.** Two consecutive missed keep-alive pings (15s apart, 30s

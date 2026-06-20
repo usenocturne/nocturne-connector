@@ -33,6 +33,10 @@ final class BluetoothService: ObservableObject {
     }
     private let probeListener = SerialProbeListener()
     private var recentProbePeer: (address: String, seenAt: Date)?
+    private var pendingProbeResponses: [String: Task<Void, Never>] = [:]
+    private var pendingAnonymousProbeResponse: Task<Void, Never>?
+    private var aclFallbackTasks: [String: Task<Void, Never>] = [:]
+    private var aclFallbackExhausted = Set<String>()
 
     var serverChannel: BluetoothRFCOMMChannelID { probeListener.registeredChannel }
 
@@ -41,6 +45,12 @@ final class BluetoothService: ObservableObject {
     func republishSPPService() {
         startSPPServer()
         objectWillChange.send()
+    }
+
+    func retryPendingCarThingLinks() {
+        refreshAdapterStatus()
+        aclFallbackExhausted.removeAll()
+        loadPairedDevices()
     }
 
     private var connectNotification: IOBluetoothUserNotification?
@@ -79,6 +89,8 @@ final class BluetoothService: ObservableObject {
         ingest(device: device)
         recentProbePeer = (address, Date())
         log.info("Car Thing ACL-connected (\(address, privacy: .public)); waiting for RFCOMM probe")
+        aclFallbackExhausted.remove(address)
+        scheduleACLFallbackIfNeeded(for: device, reason: "ACL connect")
     }
 
     private func startSPPServer() {
@@ -93,16 +105,20 @@ final class BluetoothService: ObservableObject {
 
     private func handleSerialProbe() {
         loadPairedDevices()
-        let recent = recentProbePeer.flatMap { peer -> String? in
-            Date().timeIntervalSince(peer.seenAt) <= 15 ? peer.address : nil
-        }
-        guard let address = recent ?? carThingDevices.first?.address else {
-            lastError = "Car Thing requested the connector, but no paired Car Thing was found."
-            log.warning("Bluetooth-Incoming-Port probe arrived without a paired Car Thing address")
+        guard let address = probeAddressCandidate() else {
+            log.info("Bluetooth-Incoming-Port probe arrived before a paired Car Thing address was visible")
+            waitForProbeAddressThenRespond()
             return
         }
         log.info("Responding to Bluetooth-Incoming-Port probe from \(address, privacy: .public)")
         respondToProbe(from: address)
+    }
+
+    private func probeAddressCandidate() -> String? {
+        if let peer = recentProbePeer, Date().timeIntervalSince(peer.seenAt) <= 30 {
+            return peer.address
+        }
+        return carThingDevices.first?.address
     }
 
     func refreshAdapterStatus() {
@@ -113,12 +129,19 @@ final class BluetoothService: ObservableObject {
     }
 
     static func looksLikeCarThing(name: String) -> Bool {
-        let lower = name.lowercased()
-        return lower.contains("nocturne") || lower.contains("car thing") || lower.contains("carthing")
+        isCarThingName(name)
     }
 
     nonisolated static func isCarThingName(_ name: String) -> Bool {
-        name.range(of: #"^Nocturne \(.+\)$"#, options: .regularExpression) != nil
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.range(
+            of: #"^Nocturne( \(.+\))?$"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil {
+            return true
+        }
+        let lower = trimmed.lowercased()
+        return lower.contains("car thing") || lower.contains("carthing")
     }
 
     var carThingDevices: [BTDeviceInfo] {
@@ -133,6 +156,7 @@ final class BluetoothService: ObservableObject {
         guard let list = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] else { return }
         for device in list {
             ingest(device: device)
+            scheduleACLFallbackIfNeeded(for: device, reason: "paired device refresh")
         }
         let bonded = Set(list.compactMap { $0.addressString })
         let stale: (BTDeviceInfo) -> Bool = { [self] info in
@@ -177,23 +201,37 @@ final class BluetoothService: ObservableObject {
     }
 
     private static let probeResponseDelay: UInt64 = 500_000_000
+    private static let probeBondWaitAttempts = 30
+    private static let probeBondWaitDelay: UInt64 = 1_000_000_000
+    private static let aclFallbackInitialDelay: UInt64 = 2_000_000_000
+    private static let aclFallbackRetryDelay: UInt64 = 3_000_000_000
+    private static let aclFallbackAttempts = 8
 
     private func respondToProbe(from address: String) {
         if inFlightConnects.contains(address) {
             log.info("Probe response for \(address, privacy: .public) skipped — channel 2 dial already in flight")
             return
         }
+        aclFallbackTasks[address]?.cancel()
+        aclFallbackTasks[address] = nil
+        aclFallbackExhausted.remove(address)
         guard let device = IOBluetoothDevice(addressString: address) else {
-            lastError = "Unknown device \(address)"
+            log.info("Probe response for \(address, privacy: .public) deferred — device not visible yet")
+            waitForProbeBondThenRespond(address: address)
             return
         }
         guard device.isPaired() else {
-            lastError = "\(device.name ?? address) isn't paired. Pair it in System Settings → Bluetooth first."
-            log.info("Probe response for \(address, privacy: .public) refused — device not bonded")
+            ingest(device: device)
+            log.info("Probe response for \(address, privacy: .public) deferred — waiting for bond")
+            waitForProbeBondThenRespond(address: address)
             return
         }
         if hasRPCChannel(address) {
             peerConnectability[address] = .connected
+            pendingProbeResponses[address]?.cancel()
+            pendingProbeResponses[address] = nil
+            pendingAnonymousProbeResponse?.cancel()
+            pendingAnonymousProbeResponse = nil
             return
         }
 
@@ -210,26 +248,168 @@ final class BluetoothService: ObservableObject {
         }
     }
 
+    private func waitForProbeAddressThenRespond() {
+        guard pendingAnonymousProbeResponse == nil else { return }
+        lastError = "Car Thing requested the connector; waiting for macOS to finish pairing."
+        pendingAnonymousProbeResponse = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.pendingAnonymousProbeResponse = nil }
+
+            for _ in 0..<Self.probeBondWaitAttempts {
+                if Task.isCancelled { return }
+                self.loadPairedDevices()
+                if let address = self.probeAddressCandidate() {
+                    self.log.info("Resolved pending Car Thing probe to \(address, privacy: .public)")
+                    self.respondToProbe(from: address)
+                    return
+                }
+                try? await Task.sleep(nanoseconds: Self.probeBondWaitDelay)
+            }
+
+            self.lastError = "Car Thing requested the connector, but no paired Car Thing was found."
+            self.log.warning("Bluetooth-Incoming-Port probe expired without a paired Car Thing address")
+        }
+    }
+
+    private func waitForProbeBondThenRespond(address: String) {
+        guard pendingProbeResponses[address] == nil else { return }
+        peerConnectability[address] = .connecting
+        lastError = "Car Thing requested the connector; waiting for macOS to finish pairing."
+
+        pendingProbeResponses[address] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.pendingProbeResponses[address] = nil }
+
+            for _ in 0..<Self.probeBondWaitAttempts {
+                if Task.isCancelled { return }
+                if self.hasRPCChannel(address) {
+                    self.peerConnectability[address] = .connected
+                    self.lastError = nil
+                    return
+                }
+
+                self.loadPairedDevices()
+                if let device = IOBluetoothDevice(addressString: address) {
+                    self.ingest(device: device)
+                    if device.isPaired() {
+                        self.log.info("Pairing completed for \(address, privacy: .public); answering pending probe")
+                        self.respondToProbe(from: address)
+                        return
+                    }
+                }
+
+                try? await Task.sleep(nanoseconds: Self.probeBondWaitDelay)
+            }
+
+            self.peerConnectability[address] = .rejecting(since: Date())
+            self.lastError = "Car Thing requested the connector, but macOS never reported it as paired."
+            self.log.warning("Pending probe response for \(address, privacy: .public) expired before bond became visible")
+        }
+    }
+
+    private func scheduleACLFallbackIfNeeded(for device: IOBluetoothDevice, reason: String) {
+        let address = device.addressString ?? ""
+        guard !address.isEmpty else { return }
+        guard Self.looksLikeCarThing(name: device.name ?? "") else { return }
+        guard device.isPaired(), device.isConnected() else { return }
+        guard !hasRPCChannel(address) else { return }
+        guard !inFlightConnects.contains(address) else { return }
+        guard aclFallbackTasks[address] == nil else { return }
+        guard !aclFallbackExhausted.contains(address) else { return }
+
+        peerConnectability[address] = .connecting
+        log.info("Car Thing \(address, privacy: .public) has an ACL link but no RFCOMM session; scheduling channel 2 fallback (\(reason, privacy: .public))")
+
+        aclFallbackTasks[address] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.aclFallbackTasks[address] = nil }
+
+            try? await Task.sleep(nanoseconds: Self.aclFallbackInitialDelay)
+
+            for attempt in 1...Self.aclFallbackAttempts {
+                if Task.isCancelled { return }
+                if self.hasRPCChannel(address) {
+                    self.peerConnectability[address] = .connected
+                    self.lastError = nil
+                    return
+                }
+                guard let currentDevice = IOBluetoothDevice(addressString: address) else { return }
+                self.ingest(device: currentDevice)
+                guard currentDevice.isPaired() else { return }
+                guard currentDevice.isConnected() else {
+                    self.peerConnectability[address] = .unknown
+                    return
+                }
+                if self.inFlightConnects.contains(address) {
+                    try? await Task.sleep(nanoseconds: Self.aclFallbackRetryDelay)
+                    continue
+                }
+
+                self.peerConnectability[address] = .connecting
+                self.inFlightConnects.insert(address)
+                self.log.info("Opening RFCOMM channel 2 for \(address, privacy: .public) from ACL fallback (attempt \(attempt, privacy: .public)/\(Self.aclFallbackAttempts, privacy: .public))")
+                let opened = await self.openRPCChannel(
+                    device: currentDevice,
+                    basebandFailureMessage: "macOS reports the Car Thing as connected, but the connector could not reopen the Bluetooth link.",
+                    channelFailureMessage: "macOS reports the Car Thing as connected, but the connector could not open RFCOMM channel 2.",
+                    setFailure: false
+                )
+                self.inFlightConnects.remove(address)
+                if opened { return }
+
+                if attempt < Self.aclFallbackAttempts {
+                    try? await Task.sleep(nanoseconds: Self.aclFallbackRetryDelay)
+                }
+            }
+
+            self.aclFallbackExhausted.insert(address)
+            if !self.hasRPCChannel(address) {
+                self.peerConnectability[address] = .rejecting(since: Date())
+                self.lastError = "macOS reports the Car Thing as connected, but the connector could not open RFCOMM channel 2."
+                self.log.warning("ACL fallback exhausted for \(address, privacy: .public) without an RFCOMM session")
+            }
+        }
+    }
+
     private func openRPCChannelForProbe(device: IOBluetoothDevice) async {
+        _ = await openRPCChannel(
+            device: device,
+            basebandFailureMessage: "Car Thing requested the connector, but the Mac could not reopen the Bluetooth link.",
+            channelFailureMessage: "Car Thing requested the connector, but the Mac could not open RFCOMM channel 2.",
+            setFailure: true
+        )
+    }
+
+    private func openRPCChannel(
+        device: IOBluetoothDevice,
+        basebandFailureMessage: String,
+        channelFailureMessage: String,
+        setFailure: Bool
+    ) async -> Bool {
         let addr = device.addressString ?? "?"
-        if hasRPCChannel(addr) { return }
-        guard device.isPaired() else { return }
+        if hasRPCChannel(addr) { return true }
+        guard device.isPaired() else { return false }
 
         if !device.isConnected() {
             let r = await openBaseband(device: device)
             log.info("openConnection(\(addr, privacy: .public)) after probe -> \(r, privacy: .public)")
             if r != kIOReturnSuccess {
-                peerConnectability[addr] = .rejecting(since: Date())
-                lastError = "Car Thing requested the connector, but the Mac could not reopen the Bluetooth link."
-                return
+                if setFailure {
+                    peerConnectability[addr] = .rejecting(since: Date())
+                    lastError = basebandFailureMessage
+                }
+                return false
             }
         }
 
         if await dial(device: device, candidates: [2]) {
-            return
+            return true
         }
-        peerConnectability[addr] = .rejecting(since: Date())
-        lastError = "Car Thing requested the connector, but the Mac could not open RFCOMM channel 2."
+        if setFailure {
+            peerConnectability[addr] = .rejecting(since: Date())
+            lastError = channelFailureMessage
+        }
+        return false
     }
 
     private var basebandWaiters: [UUID: (address: String, cont: CheckedContinuation<IOReturn, Never>)] = [:]
@@ -315,6 +495,13 @@ final class BluetoothService: ObservableObject {
             activeChannels.removeValue(forKey: key)
         }
         rpcManager?.detachAll(address: address)
+        pendingProbeResponses[address]?.cancel()
+        pendingProbeResponses[address] = nil
+        pendingAnonymousProbeResponse?.cancel()
+        pendingAnonymousProbeResponse = nil
+        aclFallbackTasks[address]?.cancel()
+        aclFallbackTasks[address] = nil
+        aclFallbackExhausted.remove(address)
         connections.removeAll { $0.address == address }
         if let idx = devices.firstIndex(where: { $0.address == address }) {
             devices[idx].connected = false
@@ -361,6 +548,7 @@ final class BluetoothService: ObservableObject {
         log.info("RFCOMM channel opened: \(address, privacy: .public) ch=\(chID, privacy: .public)")
         channel.setDelegate(bridge)
         activeChannels[key] = channel
+        ingest(device: device)
 
         if chID == probeListener.registeredChannel {
             if activeChannels[channelKey(address: address, id: 2)] == nil {
@@ -373,7 +561,7 @@ final class BluetoothService: ObservableObject {
         let conn = BTConnection(
             devicePath: devicePath,
             address: address,
-            name: device.name
+            name: devices.first(where: { $0.address == address })?.name ?? device.name ?? device.nameOrAddress
         )
         if !connections.contains(where: { $0.devicePath == conn.devicePath }) {
             connections.append(conn)
@@ -382,6 +570,13 @@ final class BluetoothService: ObservableObject {
             devices[idx].connected = true
         }
         peerConnectability[address] = .connected
+        pendingProbeResponses[address]?.cancel()
+        pendingProbeResponses[address] = nil
+        pendingAnonymousProbeResponse?.cancel()
+        pendingAnonymousProbeResponse = nil
+        aclFallbackTasks[address]?.cancel()
+        aclFallbackTasks[address] = nil
+        aclFallbackExhausted.remove(address)
         lastError = nil
 
         rpcManager?.attach(channel: channel, address: address)

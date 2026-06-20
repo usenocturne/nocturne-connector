@@ -20,6 +20,10 @@ enum SpotifyAuthState: Equatable {
     var isLinked: Bool {
         if case .linked = self { return true } else { return false }
     }
+
+    var isSkipped: Bool {
+        if case .skipped = self { return true } else { return false }
+    }
 }
 
 struct SpotifyDeviceAuthResponse: Decodable {

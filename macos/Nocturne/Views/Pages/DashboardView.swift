@@ -68,7 +68,7 @@ struct DashboardView: View {
             }
             Spacer()
             Button {
-                bluetooth.refreshAdapterStatus()
+                bluetooth.retryPendingCarThingLinks()
             } label: {
                 HStack(spacing: 6) {
                     Lucide(name: "refresh-cw", size: 14, color: Theme.fg)

@@ -141,23 +141,31 @@ final class RPCManager: ObservableObject {
                 method: "ping",
                 params: .map([(.string("message"), .string("RPi connected"))])
             )
-            let info = try await conn.client.call(method: "device.info", params: .map([]))
-            deviceInfo = parseDeviceInfo(info)
             lastPing = Date()
             log.info("Initial ping sent to \(key, privacy: .public)")
-            await sendAppReady()
-            Task { @MainActor [weak self] in
-                for seconds in [2, 5] as [UInt64] {
-                    try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
-                    guard let self, self.connections[key] != nil else { return }
-                    await self.broadcastToDevices(topic: "spotify.auth.status", data: .map([
-                        (.string("authenticated"), .bool(self.spotify.isSpotifyLinked)),
-                        (.string("skipped"), .bool(false))
-                    ]))
-                }
-            }
         } catch {
             log.error("Initial ping failed for \(key, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return
+        }
+
+        await sendAppReady()
+        Task { @MainActor [weak self] in
+            for seconds in [2, 5] as [UInt64] {
+                try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                guard let self, self.connections[key] != nil else { return }
+                await self.broadcastToDevices(topic: "spotify.auth.status", data: self.spotifyAuthPayload())
+            }
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self, let conn = self.connections[key] else { return }
+            do {
+                let info = try await conn.client.call(method: "device.info", params: .map([]), timeout: 5)
+                guard self.connections[key] != nil else { return }
+                self.deviceInfo = self.parseDeviceInfo(info)
+            } catch {
+                self.log.warning("device.info failed for \(key, privacy: .public) after app.ready: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 
@@ -192,10 +200,7 @@ final class RPCManager: ObservableObject {
                     self.log.error("RPC link to \(address, privacy: .public) is unresponsive; tearing it down until the next Car Thing probe")
                     self.onStaleConnection?(address)
                 }
-                await self.broadcastToDevices(topic: "spotify.auth.status", data: .map([
-                    (.string("authenticated"), .bool(self.spotify.isSpotifyLinked)),
-                    (.string("skipped"), .bool(false))
-                ]))
+                await self.broadcastToDevices(topic: "spotify.auth.status", data: self.spotifyAuthPayload())
             }
         }
     }
@@ -225,15 +230,13 @@ final class RPCManager: ObservableObject {
         let now = Date()
         let tz = TimeZone.current
 
-        await broadcastToDevices(topic: "spotify.auth.status", data: .map([
-            (.string("authenticated"), .bool(spotify.isSpotifyLinked)),
-            (.string("skipped"), .bool(false))
-        ]))
+        let authState = spotify.authState
+        await broadcastToDevices(topic: "spotify.auth.status", data: spotifyAuthPayload(for: authState))
 
         await broadcastToDevices(topic: "app.ready", data: .map([
             (.string("platform"), .string("web")),
             (.string("timestamp"), .int(Int64(now.timeIntervalSince1970 * 1000))),
-            (.string("spotifySkipped"), .bool(false)),
+            (.string("spotifySkipped"), .bool(authState.isSkipped)),
             (.string("datetime"), .string(Self.utcDatetimeString(now))),
             (.string("time"), .string(Self.localTimeString(now))),
             (.string("timezone"), .map([
@@ -247,10 +250,7 @@ final class RPCManager: ObservableObject {
     }
 
     private func handleAuthStateChange(_ state: SpotifyAuthState) async {
-        await broadcastToDevices(topic: "spotify.auth.status", data: .map([
-            (.string("authenticated"), .bool(state.isLinked)),
-            (.string("skipped"), .bool(false))
-        ]))
+        await broadcastToDevices(topic: "spotify.auth.status", data: spotifyAuthPayload(for: state))
 
         switch state {
         case .loading, .polling:
@@ -263,6 +263,42 @@ final class RPCManager: ObservableObject {
             ]))
         default:
             break
+        }
+    }
+
+    private func spotifyAuthPayload(for state: SpotifyAuthState? = nil) -> MessagePackValue {
+        switch state ?? spotify.authState {
+        case .linked:
+            return .map([
+                (.string("authenticated"), .bool(true)),
+                (.string("skipped"), .bool(false)),
+                (.string("needsAuthorization"), .bool(false))
+            ])
+        case .skipped:
+            return .map([
+                (.string("authenticated"), .bool(false)),
+                (.string("skipped"), .bool(true)),
+                (.string("needsAuthorization"), .bool(false))
+            ])
+        case .loading:
+            return .map([
+                (.string("authenticated"), .bool(false)),
+                (.string("skipped"), .bool(false)),
+                (.string("loading"), .bool(true)),
+                (.string("needsAuthorization"), .bool(false))
+            ])
+        case .polling:
+            return .map([
+                (.string("authenticated"), .bool(false)),
+                (.string("skipped"), .bool(false)),
+                (.string("authorizationInProgress"), .bool(true))
+            ])
+        case .idle:
+            return .map([
+                (.string("authenticated"), .bool(false)),
+                (.string("skipped"), .bool(false)),
+                (.string("needsAuthorization"), .bool(true))
+            ])
         }
     }
 
@@ -299,10 +335,7 @@ final class RPCManager: ObservableObject {
             ])
 
         case "spotify.auth.getStatus":
-            return .map([
-                (.string("authenticated"), .bool(spotify.isSpotifyLinked)),
-                (.string("skipped"), .bool(false))
-            ])
+            return spotifyAuthPayload()
 
         case "device.ota.check":
             let currentVersion = params.mapValue("currentVersion")?.stringValue ?? "unknown"

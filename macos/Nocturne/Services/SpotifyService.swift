@@ -7,7 +7,7 @@ import AppKit
 final class SpotifyService: ObservableObject, SpotifyCommandHandling {
     private let log = Log.make(for: "SpotifyService")
 
-    @Published private(set) var authState: SpotifyAuthState = .idle
+    @Published private(set) var authState: SpotifyAuthState = .loading
 
     var onDeviceBroadcast: ((String, Any) -> Void)?
 
