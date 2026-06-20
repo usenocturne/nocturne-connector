@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static func mainWindowVisibilityChanged(_ visible: Bool) {
         if visible {
             DispatchQueue.main.async {
+                NSApp.setActivationPolicy(.regular)
                 NSApp.activate()
                 NSApp.windows
                     .first { $0.identifier?.rawValue.hasPrefix("main") == true }?

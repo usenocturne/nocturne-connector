@@ -26,7 +26,10 @@ struct MenuBarLabel: View {
     var body: some View {
         Image(nsImage: bluetooth.carThingConnections.isEmpty ? Self.iconDisconnected : Self.iconConnected)
             .onAppear {
-                appDelegate.openMainWindow = { openWindow(id: "main") }
+                appDelegate.openMainWindow = {
+                    openWindow(id: "main")
+                    AppDelegate.mainWindowVisibilityChanged(true)
+                }
             }
     }
 }
