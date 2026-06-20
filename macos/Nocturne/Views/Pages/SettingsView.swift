@@ -68,7 +68,7 @@ struct SettingsView: View {
                                 Text("Launch at Login")
                                     .font(Theme.font(16, .medium))
                                     .foregroundStyle(Theme.fg)
-                                Text("Start the connector in the menu bar after a reboot so your Car Thing reconnects on its own.")
+                                Text("Start the connector in the menu bar after a reboot so your device reconnects on its own.")
                                     .font(Theme.font(14))
                                     .foregroundStyle(Theme.secondary)
                             }

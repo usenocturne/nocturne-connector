@@ -18,14 +18,14 @@ struct ServerStatusCard: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(listening
-                         ? "Listening for Car Thing on RFCOMM channel \(bluetooth.serverChannel)"
+                         ? "Waiting for Nocturne on RFCOMM channel \(bluetooth.serverChannel)"
                          : "Connector probe listener unavailable")
                         .font(Theme.font(14, .medium))
                         .foregroundStyle(Theme.fg)
 
                     Text(listening
-                         ? "Once paired, the Car Thing sends a request to the Mac, then connects to the Car Thing."
-                         : bluetooth.serverError ?? "Bluetooth must be on before the connector can listen for the Car Thing.")
+                         ? "Once paired, Nocturne sends a request to the Mac, then connects."
+                         : bluetooth.serverError ?? "Bluetooth must be on before the connector can listen for Nocturne.")
                         .font(Theme.font(14))
                         .foregroundStyle(Theme.secondary)
                         .fixedSize(horizontal: false, vertical: true)

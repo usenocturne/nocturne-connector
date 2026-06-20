@@ -18,9 +18,11 @@ struct SpotifyLinkBanner: View {
                             Text("Spotify linked")
                                 .font(Theme.font(14, .medium))
                                 .foregroundStyle(Theme.fg)
-                            Text(displayName ?? "Web API transport active")
-                                .font(Theme.font(14))
-                                .foregroundStyle(Theme.secondary)
+                            if let displayName {
+                                Text(displayName)
+                                    .font(Theme.font(14))
+                                    .foregroundStyle(Theme.secondary)
+                            }
                         }
                         Spacer(minLength: 16)
                         Button("Disconnect") {
@@ -76,10 +78,10 @@ struct SpotifyLinkBanner: View {
                     HStack(spacing: 16) {
                         iconTile("music", tint: Theme.accent)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Link Spotify for play/pause + volume")
+                            Text("Link Spotify for full library and playback controls")
                                 .font(Theme.font(14, .medium))
                                 .foregroundStyle(Theme.fg)
-                            Text("Without this, the Car Thing's transport buttons can't route through us — only skip works.")
+                            Text("Without connecting to Spotify, Nocturne can only show Now Playing from your Mac.")
                                 .font(Theme.font(14))
                                 .foregroundStyle(Theme.secondary)
                                 .fixedSize(horizontal: false, vertical: true)

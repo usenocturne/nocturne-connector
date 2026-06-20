@@ -96,7 +96,7 @@ struct MenuBarPanel: View {
     private var deviceName: String {
         bluetooth.carThingConnections.first?.name
             ?? bluetooth.carThingDevices.first?.name
-            ?? "Car Thing"
+            ?? "Nocturne"
     }
 
     private var connected: Bool {
@@ -112,7 +112,7 @@ struct MenuBarPanel: View {
     private var statusText: String {
         if connected { return "Connected" }
         if !bluetooth.status.powered { return "Bluetooth is off" }
-        if bluetooth.carThingDevices.isEmpty { return "No Car Thing paired" }
-        return "Waiting for Car Thing…"
+        if bluetooth.carThingDevices.isEmpty { return "No device paired" }
+        return "Waiting for Nocturne…"
     }
 }

@@ -52,7 +52,7 @@ struct NocturneApp: App {
     var body: some Scene {
         Window("Nocturne Connector", id: "main") {
             rootContent
-                .frame(minWidth: 960, minHeight: 720)
+                .frame(minWidth: 1280, minHeight: 800)
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)

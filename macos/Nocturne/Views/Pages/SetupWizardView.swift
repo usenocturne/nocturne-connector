@@ -129,7 +129,7 @@ struct SetupWizardView: View {
                     .foregroundStyle(Theme.fg)
                     .multilineTextAlignment(.center)
                     .padding(.bottom, 12)
-                Text("Let's set up your Mac to connect with your Car Thing.")
+                Text("Let's set up your Mac to connect with your Nocturne device.")
                     .font(Theme.font(16))
                     .foregroundStyle(Theme.secondary)
                     .multilineTextAlignment(.center)

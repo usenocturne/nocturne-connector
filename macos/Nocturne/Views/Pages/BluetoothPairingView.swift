@@ -12,7 +12,7 @@ struct BluetoothPairingView: View {
                         .font(Theme.font(30, .semibold))
                         .tracking(-0.75)
                         .foregroundStyle(Theme.fg)
-                    Text("Pair your Car Thing in System Settings, then manage the connection here.")
+                    Text("Pair your Nocturne device in System Settings, then manage the connection here.")
                         .font(Theme.font(16))
                         .foregroundStyle(Theme.secondary)
                 }
@@ -79,7 +79,7 @@ struct BluetoothPairingView: View {
                         Lucide(name: "bluetooth", size: 18, color: Theme.accent)
                     }
                     .frame(width: 40, height: 40)
-                    Text("Pair your Car Thing")
+                    Text("Pair your device")
                         .font(Theme.font(18, .medium))
                         .foregroundStyle(Theme.fg)
                 }
@@ -87,7 +87,7 @@ struct BluetoothPairingView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     instructionStep(1, "Click below to open settings (or go to Settings > Bluetooth).")
                     instructionStep(2, "Choose \"Nocturne (XXXX)\" when it appears and finish pairing.")
-                    instructionStep(3, "Return to the app to finish setting up your Car Thing.")
+                    instructionStep(3, "Return to the app to finish setting up your device.")
                 }
 
                 Button(action: openBluetoothSettings) {

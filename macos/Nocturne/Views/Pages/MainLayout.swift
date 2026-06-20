@@ -144,7 +144,7 @@ struct SiteFooter: View {
 
                 Theme.line.frame(height: 1)
 
-                Text("\"Spotify\" and \"Car Thing\" are trademarks of Spotify AB. This software is not affiliated with or endorsed by Spotify AB.")
+                Text("\"Spotify\" is a trademark of Spotify AB. This software is not affiliated with or endorsed by Spotify AB.")
                     .font(Theme.font(14))
                     .foregroundStyle(Theme.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)

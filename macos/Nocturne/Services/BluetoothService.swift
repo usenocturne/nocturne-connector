@@ -184,7 +184,7 @@ final class BluetoothService: ObservableObject {
         let chDesc = channel.map(String.init) ?? "auto"
         log.info("connect(\(address, privacy: .public), channel: \(chDesc, privacy: .public)) ignored — waiting for Car Thing probe")
         if userInitiated {
-            lastError = "Waiting for the Car Thing to request the connector link. Retry from the Car Thing if it does not connect."
+            lastError = "Waiting for Nocturne to finish connection. Please reconnect if this persists."
         }
     }
 
@@ -250,7 +250,7 @@ final class BluetoothService: ObservableObject {
 
     private func waitForProbeAddressThenRespond() {
         guard pendingAnonymousProbeResponse == nil else { return }
-        lastError = "Car Thing requested the connector; waiting for macOS to finish pairing."
+        lastError = "Waiting for macOS to finish pairing."
         pendingAnonymousProbeResponse = Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.pendingAnonymousProbeResponse = nil }
@@ -266,7 +266,7 @@ final class BluetoothService: ObservableObject {
                 try? await Task.sleep(nanoseconds: Self.probeBondWaitDelay)
             }
 
-            self.lastError = "Car Thing requested the connector, but no paired Car Thing was found."
+            self.lastError = "Nocturne requested the connector, but no paired device was found."
             self.log.warning("Bluetooth-Incoming-Port probe expired without a paired Car Thing address")
         }
     }
@@ -274,7 +274,7 @@ final class BluetoothService: ObservableObject {
     private func waitForProbeBondThenRespond(address: String) {
         guard pendingProbeResponses[address] == nil else { return }
         peerConnectability[address] = .connecting
-        lastError = "Car Thing requested the connector; waiting for macOS to finish pairing."
+        lastError = "Waiting for macOS to finish pairing."
 
         pendingProbeResponses[address] = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -302,7 +302,7 @@ final class BluetoothService: ObservableObject {
             }
 
             self.peerConnectability[address] = .rejecting(since: Date())
-            self.lastError = "Car Thing requested the connector, but macOS never reported it as paired."
+            self.lastError = "Nocturne was disconnected, please retry."
             self.log.warning("Pending probe response for \(address, privacy: .public) expired before bond became visible")
         }
     }
@@ -350,8 +350,8 @@ final class BluetoothService: ObservableObject {
                 self.log.info("Opening RFCOMM channel 2 for \(address, privacy: .public) from ACL fallback (attempt \(attempt, privacy: .public)/\(Self.aclFallbackAttempts, privacy: .public))")
                 let opened = await self.openRPCChannel(
                     device: currentDevice,
-                    basebandFailureMessage: "macOS reports the Car Thing as connected, but the connector could not reopen the Bluetooth link.",
-                    channelFailureMessage: "macOS reports the Car Thing as connected, but the connector could not open RFCOMM channel 2.",
+                    basebandFailureMessage: "macOS reports Nocturne as connected, but the connector could not reopen the Bluetooth link.",
+                    channelFailureMessage: "macOS reports Nocturne as connected, but the connector could not open RFCOMM channel 2.",
                     setFailure: false
                 )
                 self.inFlightConnects.remove(address)
@@ -365,7 +365,7 @@ final class BluetoothService: ObservableObject {
             self.aclFallbackExhausted.insert(address)
             if !self.hasRPCChannel(address) {
                 self.peerConnectability[address] = .rejecting(since: Date())
-                self.lastError = "macOS reports the Car Thing as connected, but the connector could not open RFCOMM channel 2."
+                self.lastError = "macOS reports Nocturne as connected, but the connector could not open RFCOMM channel 2."
                 self.log.warning("ACL fallback exhausted for \(address, privacy: .public) without an RFCOMM session")
             }
         }
@@ -374,8 +374,8 @@ final class BluetoothService: ObservableObject {
     private func openRPCChannelForProbe(device: IOBluetoothDevice) async {
         _ = await openRPCChannel(
             device: device,
-            basebandFailureMessage: "Car Thing requested the connector, but the Mac could not reopen the Bluetooth link.",
-            channelFailureMessage: "Car Thing requested the connector, but the Mac could not open RFCOMM channel 2.",
+            basebandFailureMessage: "Nocturne requested the connector, but macOS could not reopen the Bluetooth link.",
+            channelFailureMessage: "Nocturne requested the connector, but macOS could not open RFCOMM channel 2.",
             setFailure: true
         )
     }

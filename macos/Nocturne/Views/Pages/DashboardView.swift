@@ -62,7 +62,7 @@ struct DashboardView: View {
                     .font(Theme.font(30, .semibold))
                     .tracking(-0.75)
                     .foregroundStyle(Theme.fg)
-                Text("Monitor and manage your connected Car Thing devices.")
+                Text("Monitor and manage your connected Nocturne devices.")
                     .font(Theme.font(16))
                     .foregroundStyle(Theme.secondary)
             }
@@ -90,11 +90,11 @@ struct DashboardView: View {
             .frame(width: 56, height: 56)
             .padding(.bottom, 16)
 
-            Text("No Car Thing connected")
+            Text("No devices connected")
                 .font(Theme.font(18, .medium))
                 .foregroundStyle(Theme.fg)
 
-            Text("Connect your Car Thing via Bluetooth to start managing playback and settings.")
+            Text("Connect your Nocturne device via Bluetooth to start managing playback and settings.")
                 .font(Theme.font(14))
                 .foregroundStyle(Theme.secondary)
                 .multilineTextAlignment(.center)
@@ -118,7 +118,7 @@ struct DashboardView: View {
     private var deviceDialog: some View {
         let info = rpc.deviceInfo ?? selectedDevice?.info
         HStack(alignment: .top) {
-            DialogTitle(text: info?.device ?? "Nocturne Car Thing")
+            DialogTitle(text: info?.device ?? "Nocturne")
             Spacer(minLength: 16)
             DialogCloseButton { deviceDialogOpen = false }
         }
@@ -209,7 +209,7 @@ private struct ConnectedDeviceRow: View {
                 .frame(width: 40, height: 40)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(device.info?.device ?? "Nocturne Car Thing")
+                    Text(device.info?.device ?? "Nocturne")
                         .font(Theme.font(16, .medium))
                         .foregroundStyle(Theme.fg)
                     Text(device.info?.version.map { "Firmware \($0)" } ?? "Connected via Bluetooth")
@@ -263,13 +263,13 @@ private extension BluetoothService.PeerConnectability {
     var headline: String {
         switch self {
         case .rejecting:
-            return "Couldn't open the RPC channel. Make sure the Car Thing is paired and in range, then try again."
+            return "Couldn't connect. Make sure Nocturne is paired and in range, then try again."
         case .connecting:
-            return "Opening RFCOMM channel…"
+            return "Connecting to Nocturne…"
         case .connected:
             return "Connected"
         case .unknown:
-            return "Paired — waiting for the Car Thing to request the connector"
+            return "Paired, waiting for connection."
         }
     }
     var badgeText: String {
