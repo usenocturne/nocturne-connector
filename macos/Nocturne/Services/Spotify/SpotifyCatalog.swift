@@ -251,16 +251,13 @@ extension SpotifyCore {
         for entry in rawItems {
             guard let data = SpotifyJSON.at(entry, "item", "data") as? [String: Any] else { continue }
             let typename = data["__typename"] as? String
-            guard typename == "Playlist" || typename == "PseudoPlaylist" else { continue }
+            guard typename == "Playlist" else { continue }
             let uri = data["uri"] as? String ?? SpotifyJSON.at(entry, "item", "_uri") as? String ?? ""
             var playlist: [String: Any] = [
                 "uri": uri,
                 "id": uriTail(uri),
                 "name": data["name"] as? String ?? "",
             ]
-            if typename == "PseudoPlaylist" {
-                playlist["tracks"] = ["total": SpotifyJSON.int(data, "count") ?? 0]
-            }
             if let o = SpotifyJSON.at(data, "ownerV2", "data") as? [String: Any] {
                 playlist["owner"] = [
                     "display_name": o["name"] ?? "",
