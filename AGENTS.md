@@ -103,6 +103,10 @@ grants). Behavior notes:
   and the Car Thing UI then looks "disconnected" even though RFCOMM is fine.
   Wake from sleep must explicitly re-check Spotify auth and reconnect the
   Dealer socket; do not rely on suspended timers alone after a half-day sleep.
+  Auth restore already triggers the Spotify auth probe; do not add a second
+  unconditional `checkAuthStatus()` during online boot. `SpotifyService`
+  single-flights status checks, and Supabase `spotify_credentials` reads should
+  select only the credential columns they decrypt/use rather than `select=*`.
 - **Spotify Connect identity is stable.** The macOS Dealer registers one
   persisted hidden `hobs_*` device ID and `spotify.player.state` snapshot reads
   reuse the live Dealer `Spotify-Connection-Id` when available. Do not create a

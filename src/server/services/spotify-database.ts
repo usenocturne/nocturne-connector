@@ -53,8 +53,9 @@ export class SpotifyDatabaseStorage {
     const query = async (): Promise<SpotifyDatabaseCredentials> => {
       const { data, error } = await this.supabase
         .from("spotify_credentials")
-        .select()
-        .eq("user_id", userID);
+        .select("access_token,refresh_token,scope,token_type,access_token_expires_at")
+        .eq("user_id", userID)
+        .limit(1);
 
       if (error) throw new Error(`Database error: ${error.message}`);
       if (!data || data.length === 0) throw new Error("No credentials found");

@@ -193,10 +193,6 @@ async function runOnlineInit(manager: NocturneManager): Promise<void> {
   } catch (err) {
     log.error(`Auth restore failed after readiness gate: ${err}`);
   }
-
-  manager.spotifyService.checkAuthStatus().catch((err) => {
-    log.warn(`Background Spotify auth check failed: ${err}`);
-  });
 }
 
 main().catch((err) => {

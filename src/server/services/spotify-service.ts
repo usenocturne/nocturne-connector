@@ -68,6 +68,7 @@ export class SpotifyService {
   private pollingInterval: ReturnType<typeof setInterval> | null = null;
   private tokenRefreshTimer: ReturnType<typeof setInterval> | null = null;
   private authCheckRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private inFlightAuthCheckPromise: Promise<void> | null = null;
   private authCheckAttempts = 0;
   private authStateCallbacks: ((state: SpotifyAuthState) => void)[] = [];
   private getUserID: () => string | null;
@@ -145,6 +146,17 @@ export class SpotifyService {
   }
 
   async checkAuthStatus(): Promise<void> {
+    if (this.inFlightAuthCheckPromise) {
+      return this.inFlightAuthCheckPromise;
+    }
+
+    this.inFlightAuthCheckPromise = this.performAuthStatusCheck().finally(() => {
+      this.inFlightAuthCheckPromise = null;
+    });
+    return this.inFlightAuthCheckPromise;
+  }
+
+  private async performAuthStatusCheck(): Promise<void> {
     // Always cancel any pending retry; this call is the authoritative state probe.
     if (this.authCheckRetryTimer) {
       clearTimeout(this.authCheckRetryTimer);
