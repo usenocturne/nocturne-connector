@@ -4,12 +4,12 @@ set -e
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Image build config
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-: "${CONNECTOR_IMAGE_VERSION:="v2.0.2"}"
+: "${CONNECTOR_IMAGE_VERSION:="v2.0.3"}"
 
-: "${ALPINE_BUILD:="3.23"}"
-: "${ALPINE_BUILD_PATCH:="4"}"
+: "${ALPINE_BUILD:="3.24"}"
+: "${ALPINE_BUILD_PATCH:="1"}"
 
-: "${BUN_VERSION:="1.3.13"}"
+: "${BUN_VERSION:="1.3.14"}"
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # System config
