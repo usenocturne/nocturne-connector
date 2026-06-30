@@ -1,5 +1,5 @@
-export const SUPABASE_URL = "https://qrrtjdmdclkpssjzhzhw.supabase.co";
-export const SUPABASE_ANON_KEY = "sb_publishable_sUnSM7qjeWn6rcI9x_fmWg_VJddosT-";
+export const SUPABASE_URL = "https://sb.usenocturne.com";
+export const SUPABASE_ANON_KEY = "sb_publishable_8Sce2-p3DlCRTpOc7WXCuH_PXVQbLoR";
 
 export const SPOTIFY_CLIENT_ID = "65b708073fc0480ea92a077233ca87bd";
 export const WEB_PLAYER_CLIENT_ID = "d8a5ed958d274c2e8ee717e6a4b0971d";
