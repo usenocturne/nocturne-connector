@@ -66,4 +66,4 @@ export const SpotifyOperationHash = {
 
 export const RFCOMM_UUID = "00001101-0000-1000-8000-00805f9b34fb";
 
-export const NOCTURNE_SITE_URL = process.env.NOCTURNE_SITE_URL ?? "https://main-nocturne-site.vantalabs.workers.dev/";
+export const NOCTURNE_SITE_URL = process.env.NOCTURNE_SITE_URL ?? "https://usenocturne.com/";
