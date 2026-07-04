@@ -536,17 +536,23 @@ final class BluetoothService: ObservableObject {
         }
     }
 
-    fileprivate func handleChannelOpened(_ channel: IOBluetoothRFCOMMChannel) {
+    fileprivate func handleChannelOpened(_ channel: IOBluetoothRFCOMMChannel, delegateInstalled: Bool) {
         guard let device = channel.getDevice(), let address = device.addressString else { return }
         let chID = channel.getID()
         let key = channelKey(address: address, id: chID)
 
-        if activeChannels[key] != nil {
+        if let active = activeChannels[key] {
+            if active !== channel {
+                log.warning("Ignoring duplicate RFCOMM channel for \(address, privacy: .public) ch=\(chID, privacy: .public)")
+                channel.close()
+            }
             return
         }
 
         log.info("RFCOMM channel opened: \(address, privacy: .public) ch=\(chID, privacy: .public)")
-        channel.setDelegate(bridge)
+        if !delegateInstalled {
+            channel.setDelegate(bridge)
+        }
         activeChannels[key] = channel
         ingest(device: device)
 
@@ -587,13 +593,24 @@ final class BluetoothService: ObservableObject {
         if channel.getID() == probeListener.registeredChannel {
             return
         }
+        let key = channelKey(address: address, id: channel.getID())
+        guard let active = activeChannels[key], active === channel else {
+            log.warning("Ignoring data from stale RFCOMM channel for \(address, privacy: .public) ch=\(channel.getID(), privacy: .public)")
+            return
+        }
         rpcManager?.ingest(data, channel: channel, address: address)
     }
 
     fileprivate func handleChannelClosed(_ channel: IOBluetoothRFCOMMChannel) {
         guard let address = channel.getDevice()?.addressString else { return }
         let chID = channel.getID()
-        activeChannels.removeValue(forKey: channelKey(address: address, id: chID))
+        let key = channelKey(address: address, id: chID)
+        guard let active = activeChannels[key], active === channel else {
+            log.warning("Ignoring close from stale RFCOMM channel for \(address, privacy: .public) ch=\(chID, privacy: .public)")
+            return
+        }
+
+        activeChannels.removeValue(forKey: key)
         rpcManager?.detach(channel: channel, address: address)
         log.info("RFCOMM channel closed: \(address, privacy: .public) ch=\(chID, privacy: .public)")
 
@@ -639,7 +656,7 @@ final class BluetoothDelegateBridge: NSObject, IOBluetoothRFCOMMChannelDelegate 
     func rfcommChannelOpenComplete(_ rfcommChannel: IOBluetoothRFCOMMChannel!, status error: IOReturn) {
         Task { @MainActor in self.service?.reportOutboundOpenComplete(status: error) }
         guard error == kIOReturnSuccess, let rfcommChannel else { return }
-        Task { @MainActor in self.service?.handleChannelOpened(rfcommChannel) }
+        Task { @MainActor in self.service?.handleChannelOpened(rfcommChannel, delegateInstalled: true) }
     }
 
     func rfcommChannelClosed(_ rfcommChannel: IOBluetoothRFCOMMChannel!) {

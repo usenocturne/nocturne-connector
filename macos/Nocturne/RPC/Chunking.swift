@@ -158,14 +158,27 @@ final class ChunkedMessageAssembler {
     private struct Pending {
         var total: Int
         var chunks: [Int: Data]
+        var updatedAt: Date
     }
+
+    private static let pendingTTL: TimeInterval = 30
+    private static let maxPendingMessages = 5
+
     private var pending: [String: Pending] = [:]
 
     var pendingCount: Int { pending.count }
 
     func addChunk(messageId: String, index: Int, total: Int, payload: Data) -> Data? {
-        var entry = pending[messageId] ?? Pending(total: total, chunks: [:])
+        cleanupStale()
+
+        var entry: Pending
+        if let existing = pending[messageId], existing.total == total {
+            entry = existing
+        } else {
+            entry = Pending(total: total, chunks: [:], updatedAt: Date())
+        }
         entry.chunks[index] = payload
+        entry.updatedAt = Date()
         pending[messageId] = entry
 
         if entry.chunks.count == entry.total {
@@ -177,10 +190,27 @@ final class ChunkedMessageAssembler {
             }
             return assembled
         }
+        enforcePendingLimit()
         return nil
+    }
+
+    func cleanupStale(now: Date = Date()) {
+        let cutoff = now.addingTimeInterval(-Self.pendingTTL)
+        pending = pending.filter { $0.value.updatedAt >= cutoff }
+        enforcePendingLimit()
     }
 
     func clear() {
         pending.removeAll()
+    }
+
+    private func enforcePendingLimit() {
+        guard pending.count > Self.maxPendingMessages else { return }
+        let sortedIds = pending
+            .sorted { $0.value.updatedAt < $1.value.updatedAt }
+            .map(\.key)
+        for messageId in sortedIds.dropLast(Self.maxPendingMessages) {
+            pending.removeValue(forKey: messageId)
+        }
     }
 }

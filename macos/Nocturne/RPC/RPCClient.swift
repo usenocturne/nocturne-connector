@@ -21,9 +21,12 @@ final class RPCClient {
     private var sentChunkOrder: [String] = []
     private let sentChunksLimit = 32
     private var invalidBase64SampleCount = 0
+    private var cleanupTask: Task<Void, Never>?
+    private static let cleanupIntervalNs: UInt64 = 30 * 1_000_000_000
 
     init(id: String) {
         self.id = id
+        startPeriodicCleanup()
     }
 
     func ingest(_ data: Data) async {
@@ -167,6 +170,16 @@ final class RPCClient {
         }
     }
 
+    private func startPeriodicCleanup() {
+        cleanupTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.cleanupIntervalNs)
+                guard let self, !Task.isCancelled else { return }
+                self.assembler.cleanupStale()
+            }
+        }
+    }
+
     func retransmitChunk(messageId: String, chunkIndex: Int) {
         guard let chunks = sentChunks[messageId], chunks.indices.contains(chunkIndex) else {
             log.error("Cannot retransmit chunk \(chunkIndex, privacy: .public) for \(messageId, privacy: .public): not found")
@@ -177,6 +190,8 @@ final class RPCClient {
     }
 
     func cleanup() {
+        cleanupTask?.cancel()
+        cleanupTask = nil
         for (_, cont) in pendingRequests {
             cont.resume(throwing: RPCError.disconnected)
         }

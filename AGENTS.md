@@ -92,7 +92,9 @@ grants). Behavior notes:
   RPC timeout) tear the link down — including the baseband ACL — and then wait
   for the next Car Thing probe. This recovers channels whose close was never
   delivered (Mac sleep, abrupt device power-off) without the Mac polling the Car
-  Thing address.
+  Thing address. RFCOMM data/close callbacks must match the stored channel
+  object before they ingest bytes or detach RPC; stale duplicate channel-2
+  callbacks can share the same address/channel key as the live link.
 - **Auth must survive overnight network flaps.** The Supabase session JWT is
   refreshed ahead of expiry and on demand (with a forced retry on PostgREST
   401); only a definitive token rejection signs out — never a network error.
