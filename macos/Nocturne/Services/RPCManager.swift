@@ -9,9 +9,12 @@ import IOBluetooth
 final class RPCManager: ObservableObject {
     private let log = Log.make(for: "RPCManager")
     private let spotify: SpotifyService
+    private let analytics: AnalyticsService?
+    private let currentUserID: () -> String?
     private let ota = OTAService()
 
     @Published private(set) var deviceInfo: CarThingInfo? = nil
+    @Published private(set) var deviceInfoByAddress: [String: CarThingInfo] = [:]
     @Published private(set) var lastPing: Date? = nil
 
     private struct Connection {
@@ -30,8 +33,14 @@ final class RPCManager: ObservableObject {
     private var authObservation: AnyCancellable?
     var onStaleConnection: ((String) -> Void)?
 
-    init(spotify: SpotifyService) {
+    init(
+        spotify: SpotifyService,
+        analytics: AnalyticsService? = nil,
+        currentUserID: @escaping () -> String? = { nil }
+    ) {
         self.spotify = spotify
+        self.analytics = analytics
+        self.currentUserID = currentUserID
 
         spotify.onDeviceBroadcast = { [weak self] topic, data in
             Task { @MainActor [weak self] in
@@ -112,6 +121,12 @@ final class RPCManager: ObservableObject {
             keepAliveFailures.removeValue(forKey: key)
             log.info("RPC client detached: \(key, privacy: .public)")
         }
+        if !connections.values.contains(where: { $0.address == address }) {
+            deviceInfoByAddress.removeValue(forKey: address)
+            if deviceInfoByAddress.isEmpty {
+                deviceInfo = nil
+            }
+        }
         if connections.isEmpty {
             stopKeepAlive()
         }
@@ -123,6 +138,10 @@ final class RPCManager: ObservableObject {
             connections.removeValue(forKey: key)
             keepAliveFailures.removeValue(forKey: key)
             log.info("RPC client detached: \(key, privacy: .public)")
+        }
+        deviceInfoByAddress.removeValue(forKey: address)
+        if deviceInfoByAddress.isEmpty {
+            deviceInfo = nil
         }
         if connections.isEmpty {
             stopKeepAlive()
@@ -162,11 +181,18 @@ final class RPCManager: ObservableObject {
             do {
                 let info = try await conn.client.call(method: "device.info", params: .map([]), timeout: 5)
                 guard self.connections[key] != nil else { return }
-                self.deviceInfo = self.parseDeviceInfo(info)
+                let parsed = self.parseDeviceInfo(info)
+                self.deviceInfo = parsed
+                self.deviceInfoByAddress[conn.address] = parsed
+                await self.recordConnectionAnalytics(parsed)
             } catch {
                 self.log.warning("device.info failed for \(key, privacy: .public) after app.ready: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    func deviceInfo(for address: String) -> CarThingInfo? {
+        deviceInfoByAddress[address] ?? deviceInfo
     }
 
     private func startKeepAliveIfNeeded() {
@@ -414,6 +440,34 @@ final class RPCManager: ObservableObject {
             buildDate: value.mapValue("buildDate")?.stringValue,
             gitHash: value.mapValue("gitHash")?.stringValue,
             serialNumber: value.mapValue("serialNumber")?.stringValue
+        )
+    }
+
+    private func recordConnectionAnalytics(_ info: CarThingInfo) async {
+        guard let analytics else { return }
+        let serial = (info.serialNumber?.isEmpty == false) ? info.serialNumber! : "unknown"
+        let firmwareVersion = (info.version?.isEmpty == false) ? info.version! : "unknown"
+        let shortSerial = serial.count >= 4 ? String(serial.suffix(4)) : serial
+        let deviceName = "Nocturne (\(shortSerial))"
+        let userID = currentUserID()
+
+        await analytics.recordDailyActive(
+            deviceSerial: serial,
+            userId: userID,
+            appVersion: AppConfig.connectorVersion,
+            firmwareVersion: firmwareVersion,
+            phoneVersion: "Connector"
+        )
+
+        await analytics.trackEvent(
+            deviceSerial: serial,
+            userId: userID,
+            eventType: "connection.established",
+            eventData: [
+                "device": deviceName,
+                "mfi_serial": serial,
+                "firmware_version": firmwareVersion,
+            ]
         )
     }
 

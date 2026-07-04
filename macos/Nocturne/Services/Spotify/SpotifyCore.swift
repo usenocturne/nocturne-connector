@@ -70,6 +70,7 @@ final class SpotifyCore {
     private var pollingTask: Task<Void, Never>?
     private var tokenRefreshTask: Task<Void, Never>?
     private var authCheckRetryTask: Task<Void, Never>?
+    private var inFlightAuthCheckTask: Task<Void, Never>?
     private var authCheckAttempts = 0
 
     var spclientEndpoint: String?
@@ -157,6 +158,21 @@ final class SpotifyCore {
     }
 
     func checkAuthStatus(forceRefresh: Bool = false) async {
+        if let task = inFlightAuthCheckTask {
+            await task.value
+            return
+        }
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performAuthStatusCheck(forceRefresh: forceRefresh)
+        }
+        inFlightAuthCheckTask = task
+        await task.value
+        inFlightAuthCheckTask = nil
+    }
+
+    private func performAuthStatusCheck(forceRefresh: Bool = false) async {
         authCheckRetryTask?.cancel()
         authCheckRetryTask = nil
 
@@ -184,6 +200,13 @@ final class SpotifyCore {
             let msg = error.localizedDescription
             if msg.contains("No credentials found") {
                 authCheckAttempts = 0
+                setAuthState(.idle)
+                return
+            }
+            if error is SpotifyCredentialDecryptionError {
+                authCheckAttempts = 0
+                cachedCredentials = nil
+                log.error("Stored Spotify credentials are not decryptable on this Mac; preserving remote row and requiring Spotify re-link")
                 setAuthState(.idle)
                 return
             }

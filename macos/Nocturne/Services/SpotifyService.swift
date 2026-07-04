@@ -7,7 +7,7 @@ import AppKit
 final class SpotifyService: ObservableObject, SpotifyCommandHandling {
     private let log = Log.make(for: "SpotifyService")
 
-    @Published private(set) var authState: SpotifyAuthState = .loading
+    @Published private(set) var authState: SpotifyAuthState = .idle
 
     var onDeviceBroadcast: ((String, Any) -> Void)?
 
@@ -77,10 +77,6 @@ final class SpotifyService: ObservableObject, SpotifyCommandHandling {
     var isSpotifyLinked: Bool {
         if case .linked = authState { return true }
         return false
-    }
-
-    func bootstrap() async {
-        await core.checkAuthStatus()
     }
 
     func startDeviceAuthorization() async throws {

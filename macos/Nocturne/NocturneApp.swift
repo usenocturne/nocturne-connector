@@ -8,18 +8,26 @@ struct NocturneApp: App {
     @StateObject private var auth: AuthService
     @StateObject private var spotify: SpotifyService
     @StateObject private var bluetooth: BluetoothService
-    @StateObject private var analytics = AnalyticsService()
+    @StateObject private var analytics: AnalyticsService
     @StateObject private var rpc: RPCManager
     @StateObject private var loginItem = LoginItemService()
 
     private let authSpotifySync: AnyCancellable
+    private let authAnalyticsSync: AnyCancellable
     private let startsInBackground: Bool
 
     init() {
         FontLoader.registerBundledFonts()
         let auth = AuthService()
         let spotify = SpotifyService(auth: auth)
-        let rpcManager = RPCManager(spotify: spotify)
+        let analytics = AnalyticsService(accessTokenProvider: {
+            try await auth.currentAccessToken()
+        })
+        let rpcManager = RPCManager(
+            spotify: spotify,
+            analytics: analytics,
+            currentUserID: { auth.status.user?.id }
+        )
         let bluetooth = BluetoothService()
         bluetooth.rpcManager = rpcManager
         rpcManager.onStaleConnection = { [weak bluetooth] address in
@@ -28,6 +36,7 @@ struct NocturneApp: App {
         _auth = StateObject(wrappedValue: auth)
         _spotify = StateObject(wrappedValue: spotify)
         _bluetooth = StateObject(wrappedValue: bluetooth)
+        _analytics = StateObject(wrappedValue: analytics)
         _rpc = StateObject(wrappedValue: rpcManager)
 
         let background = SessionStore.shared.setupComplete
@@ -43,9 +52,17 @@ struct NocturneApp: App {
                 Task { await spotify.checkAuthStatus() }
             }
 
+        authAnalyticsSync = auth.$status
+            .map(\.authenticated)
+            .removeDuplicates()
+            .dropFirst()
+            .sink { authenticated in
+                guard authenticated else { return }
+                Task { await analytics.syncPendingAnalytics() }
+            }
+
         Task {
             await auth.initialize()
-            await spotify.bootstrap()
         }
     }
 

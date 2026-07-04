@@ -1,8 +1,8 @@
 import Foundation
 
 enum SpotifyConstants {
-    static let supabaseURL = "https://qrrtjdmdclkpssjzhzhw.supabase.co"
-    static let supabaseAnonKey = "sb_publishable_sUnSM7qjeWn6rcI9x_fmWg_VJddosT-"
+    static let supabaseURL = "https://sb.usenocturne.com"
+    static let supabaseAnonKey = "sb_publishable_8Sce2-p3DlCRTpOc7WXCuH_PXVQbLoR"
 
     static let spotifyClientID = "65b708073fc0480ea92a077233ca87bd"
     static let webPlayerClientID = "d8a5ed958d274c2e8ee717e6a4b0971d"

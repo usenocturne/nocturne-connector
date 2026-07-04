@@ -10,6 +10,14 @@ struct SpotifyDatabaseCredentials {
     let accessTokenExpiresAt: Date
 }
 
+struct SpotifyCredentialDecryptionError: LocalizedError {
+    let message: String
+    init(_ message: String = "Stored Spotify credentials could not be decrypted on this Mac. Re-link Spotify to refresh the shared grant.") {
+        self.message = message
+    }
+    var errorDescription: String? { message }
+}
+
 final class SpotifyDatabaseStorage {
     typealias AccessTokenProvider = (_ forceRefresh: Bool) async throws -> String
 
@@ -92,8 +100,9 @@ final class SpotifyDatabaseStorage {
     private func queryCredentials(userID: String) async throws -> SpotifyDatabaseCredentials {
         var comp = URLComponents(string: restBase)!
         comp.queryItems = [
-            URLQueryItem(name: "select", value: "*"),
+            URLQueryItem(name: "select", value: "access_token,refresh_token,scope,token_type,access_token_expires_at"),
             URLQueryItem(name: "user_id", value: "eq.\(userID)"),
+            URLQueryItem(name: "limit", value: "1"),
         ]
         let (data, http) = try await authedRequest { hdrs in
             try await self.api.request(comp.url!, headers: hdrs)
@@ -155,6 +164,11 @@ enum SpotifyCredentialCrypto {
     }
 
     private static func deriveKey(userID: String) throws -> SymmetricKey {
+        let keyUserID = canonicalEncryptionUserID(userID)
+        return try deriveKeyMaterial(userID: keyUserID)
+    }
+
+    private static func deriveKeyMaterial(userID: String) throws -> SymmetricKey {
         let salt = Data((appSalt + userID).utf8)
         let password = Data(userID.utf8)
         var derived = Data(count: keyLength)
@@ -176,31 +190,52 @@ enum SpotifyCredentialCrypto {
         return SymmetricKey(data: derived)
     }
 
+    private static func canonicalEncryptionUserID(_ userID: String) -> String {
+        UUID(uuidString: userID)?.uuidString ?? userID
+    }
+
+    private static func legacyEncryptionUserIDs(for userID: String) -> [String] {
+        let canonical = canonicalEncryptionUserID(userID)
+        guard canonical != userID else { return [] }
+        return [userID]
+    }
+
     static func encrypt(_ plaintext: String, userID: String) throws -> String {
         let key = try deriveKey(userID: userID)
-        let nonce = AES.GCM.Nonce()
-        let sealed = try AES.GCM.seal(Data(plaintext.utf8), using: key, nonce: nonce)
-        var combined = Data(nonce)
-        combined.append(sealed.ciphertext)
-        combined.append(sealed.tag)
+        let sealed = try AES.GCM.seal(Data(plaintext.utf8), using: key)
+        guard let combined = sealed.combined else {
+            throw SpotifyAPIError("Failed to encrypt Spotify credentials")
+        }
         return combined.base64EncodedString()
     }
 
     static func decrypt(_ ciphertext: String, userID: String) throws -> String {
-        let key = try deriveKey(userID: userID)
         guard let combined = Data(base64Encoded: ciphertext),
               combined.count >= ivLength + tagLength else {
-            throw SpotifyAPIError("Invalid encrypted data format")
+            throw SpotifyCredentialDecryptionError("Invalid encrypted Spotify credential format")
         }
-        let nonce = try AES.GCM.Nonce(data: combined.prefix(ivLength))
-        let tag = combined.suffix(tagLength)
-        let encrypted = combined.dropFirst(ivLength).dropLast(tagLength)
-        let box = try AES.GCM.SealedBox(nonce: nonce, ciphertext: encrypted, tag: tag)
-        let decrypted = try AES.GCM.open(box, using: key)
-        guard let text = String(data: decrypted, encoding: .utf8) else {
-            throw SpotifyAPIError("Decryption produced invalid UTF-8")
+        let box: AES.GCM.SealedBox
+        do {
+            box = try AES.GCM.SealedBox(combined: combined)
+        } catch {
+            throw SpotifyCredentialDecryptionError("Invalid encrypted Spotify credential format")
         }
-        return text
+
+        for candidate in [canonicalEncryptionUserID(userID)] + legacyEncryptionUserIDs(for: userID) {
+            if let text = tryDecrypt(box: box, userID: candidate) {
+                return text
+            }
+        }
+
+        throw SpotifyCredentialDecryptionError()
+    }
+
+    private static func tryDecrypt(box: AES.GCM.SealedBox, userID: String) -> String? {
+        guard let key = try? deriveKeyMaterial(userID: userID),
+              let decrypted = try? AES.GCM.open(box, using: key) else {
+            return nil
+        }
+        return String(data: decrypted, encoding: .utf8)
     }
 
     static func userID(fromJWT token: String) -> String? {

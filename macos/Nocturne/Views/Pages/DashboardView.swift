@@ -10,7 +10,7 @@ struct DashboardView: View {
         var seen = Set<String>()
         return bluetooth.carThingConnections.compactMap { conn -> ConnectedDevice? in
             guard seen.insert(conn.address).inserted else { return nil }
-            return ConnectedDevice(id: conn.address, address: conn.address, info: rpc.deviceInfo)
+            return ConnectedDevice(id: conn.address, address: conn.address, info: rpc.deviceInfo(for: conn.address))
         }
     }
 

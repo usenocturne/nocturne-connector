@@ -107,6 +107,12 @@ grants). Behavior notes:
   unconditional `checkAuthStatus()` during online boot. `SpotifyService`
   single-flights status checks, and Supabase `spotify_credentials` reads should
   select only the credential columns they decrypt/use rather than `select=*`.
+  Shared Spotify credential rows used by the iPhone app and macOS connector are
+  encrypted as CryptoKit AES-GCM `combined` payloads (nonce + ciphertext + tag)
+  with PBKDF2-HMAC-SHA256, 100k iterations, salt
+  `com.usenocturne.Nocturne.encryption.v1` + canonical Swift
+  `UUID.uuidString` user ID casing. macOS may read legacy lowercase-user-ID
+  rows, but new writes must stay iOS-compatible.
 - **Spotify Connect identity is stable.** The macOS Dealer registers one
   persisted hidden `hobs_*` device ID and `spotify.player.state` snapshot reads
   reuse the live Dealer `Spotify-Connection-Id` when available. Do not create a
