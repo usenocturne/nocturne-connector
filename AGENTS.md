@@ -121,6 +121,13 @@ grants). Behavior notes:
   new hidden Connect-state device for every reconnect or state fetch; stale
   throwaway peers can make the Car Thing UI fall back to "Not Playing" while
   Spotify is still active.
+- **Release DMGs use Developer ID notarization.** `just macos-dmg` archives the
+  macOS target with hardened runtime, exports with `macos/ExportOptions.plist`,
+  builds a DMG, submits it with `xcrun notarytool` using the
+  `NOTARY_PROFILE` keychain profile (default `nocturne-notary`), then staples
+  and validates the ticket. `just macos-dmg-fast` is a local ad-hoc DMG smoke
+  test and is not notarizable; `just macos-dmg-signed-fast` requires a
+  Developer ID certificate but skips the notary submit.
 
 ## SERVER ↔ CLIENT WIRE CONTRACT
 
@@ -161,6 +168,11 @@ just connector-api      # bun install + tsc check + vite build, in src/
 
 # Lint
 just lint               # pre-commit run --all-files
+
+# macOS connector release DMGs
+just macos-dmg          # Developer ID DMG + notarization/stapling
+just macos-dmg-fast     # local ad-hoc DMG, not notarized
+just macos-dmg-signed-fast # Developer ID DMG, skips notarization
 
 # Cross-arch QEMU helper (registers binfmt for non-arm64 hosts)
 just docker-qemu

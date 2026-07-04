@@ -7,6 +7,15 @@ run: connector-api
 lint:
     pre-commit run --all-files
 
+macos-dmg:
+    scripts/build-macos-dmg.sh
+
+macos-dmg-fast:
+    scripts/build-macos-dmg.sh --local
+
+macos-dmg-signed-fast:
+    scripts/build-macos-dmg.sh --skip-notarize
+
 docker-qemu:
     docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
@@ -15,4 +24,3 @@ docker-build:
 
 docker-run: docker-build
     docker run --rm --privileged -v "$PWD/output:/work/output" -v "$PWD/cache:/work/cache" nocturne-connector-builder
-
