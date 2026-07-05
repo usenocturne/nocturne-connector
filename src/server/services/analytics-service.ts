@@ -1,12 +1,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "fs";
 import { dirname } from "path";
+import { CONNECTOR_STATE_DIR } from "../config";
 import { createLogger } from "../utils/logger";
 
 const log = createLogger("AnalyticsService");
 
-const ANALYTICS_ENABLED_PATH = "/etc/nocturne-connector/analytics-enabled.json";
-const ANALYTICS_PENDING_PATH = "/etc/nocturne-connector/analytics-pending.json";
+const ANALYTICS_ENABLED_PATH = `${CONNECTOR_STATE_DIR}/analytics-enabled.json`;
+const ANALYTICS_PENDING_PATH = `${CONNECTOR_STATE_DIR}/analytics-pending.json`;
 const PENDING_QUEUE_LIMIT = 200;
 
 type PendingAnalyticType = "dailyActive" | "event";

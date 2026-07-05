@@ -13,6 +13,7 @@ import { createSpotifyRoutes } from "./routes/spotify";
 import { createBluetoothRoutes } from "./routes/bluetooth";
 import { createDeviceRoutes } from "./routes/device";
 import { createAnalyticsRoutes } from "./routes/analytics";
+import { createOtaRoutes } from "./routes/ota";
 import { existsSync } from "fs";
 
 const log = createLogger("Server");
@@ -88,6 +89,7 @@ async function main() {
     .use(createBluetoothRoutes(manager.bluetoothService))
     .use(createDeviceRoutes(manager))
     .use(createAnalyticsRoutes(manager.analyticsService))
+    .use(createOtaRoutes(manager.otaService))
     .ws("/ws", {
       open(ws) {
         ws.subscribe(WS_TOPIC);

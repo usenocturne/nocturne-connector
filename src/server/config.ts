@@ -1,3 +1,5 @@
+import { existsSync } from "fs";
+
 export const SUPABASE_URL = "https://sb.usenocturne.com";
 export const SUPABASE_ANON_KEY = "sb_publishable_8Sce2-p3DlCRTpOc7WXCuH_PXVQbLoR";
 
@@ -7,9 +9,15 @@ export const WEB_PLAYER_CLIENT_ID = "d8a5ed958d274c2e8ee717e6a4b0971d";
 export const PORT = Number(process.env.PORT) || 80;
 
 export const OTA_SERVER_URL = "https://ota.usenocturne.com";
+export const CONNECTOR_RELEASES_API_URL =
+  "https://api.github.com/repos/usenocturne/nocturne-connector/releases";
 
-export const AUTH_SESSION_PATH = "/etc/nocturne-connector/auth-session.json";
-export const SETUP_STATE_PATH = "/etc/nocturne-connector/setup-state.json";
+export const CONNECTOR_STATE_DIR =
+  process.env.NOCTURNE_CONNECTOR_STATE_DIR ??
+  (existsSync("/data") ? "/data/nocturne-connector" : "/etc/nocturne-connector");
+
+export const AUTH_SESSION_PATH = `${CONNECTOR_STATE_DIR}/auth-session.json`;
+export const SETUP_STATE_PATH = `${CONNECTOR_STATE_DIR}/setup-state.json`;
 
 export const SPOTIFY_SCOPES = [
   "app-remote-control",

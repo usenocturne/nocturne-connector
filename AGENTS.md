@@ -3,7 +3,7 @@
 **Generated:** 2026-05-05
 **Runtime (server):** Bun + TypeScript + Elysia
 **Runtime (UI):** Vite + React 19 + Tailwind 4 + Radix UI
-**Image:** Alpine-based, built via `raspi-alpine` builder
+**Image:** Alpine-based, A/B rootfs with U-Boot fallback, built via `raspi-alpine`-style scripts
 **Related repos:** `nocturned` (the daemon on the Car Thing this bridges Spotify auth + BT to), `nocturne-ui` (the kiosk UI on the Car Thing — independent), `nocturne-image` (firmware that pairs with this device).
 
 ## OVERVIEW
@@ -13,6 +13,7 @@ A flashable Raspberry Pi OS image (~60 MB) that gives the Car Thing internet by 
 1. **Initial setup wizard** (Wi-Fi, account login, BT pair the Car Thing)
 2. **Spotify account linking** (OAuth callback handling)
 3. **Bridge RPC** between phone/cloud services and the Car Thing
+4. **Connector self-updates** (Settings UI checks GitHub release rootfs update assets and flashes the inactive A/B slot)
 
 The Pi acts as a controller box; the Car Thing remains the primary user-facing device.
 
@@ -23,12 +24,12 @@ nocturne-connector/
 ├── README.md
 ├── LICENSE                       # Apache (NOT GPL — separate from firmware repos)
 ├── Justfile                      # connector-api, run, lint, docker-qemu
-├── build.sh                      # Top-level builder — produces output/*.img.gz
+├── build.sh                      # Top-level builder — produces output/*.img.gz + *_update.img.gz
 ├── wpa_supplicant.conf           # Default Wi-Fi config baked into image (user edits before flash)
 ├── scripts/
 ├── resources/                    # Image-build assets
 ├── cache/                        # Build cache (gitignored)
-├── output/                       # Final flashable image: nocturne-connector_v<X>.img.gz + .sha256
+├── output/                       # Final flashable image + rootfs self-update image and .sha256 files
 ├── macos/                        # Native macOS port of the connector (see "MACOS APP" below)
 └── src/                          # The actual Bun application — gets baked into the Pi rootfs
     ├── package.json              # bun + vite + elysia + react + dbus-next + supabase-js
@@ -44,6 +45,7 @@ nocturne-connector/
     │   │   ├── spotify.ts        # /api/spotify — link/disconnect Spotify accounts
     │   │   ├── info.ts           # /api/info — version, OS
     │   │   ├── setup.ts          # /api/setup — onboarding state machine
+    │   │   ├── ota.ts            # /api/ota — connector self-update check/start/status
     │   │   └── power.ts          # /api/power — reboot / shutdown
     │   ├── services/
     │   │   ├── auth-service.ts
@@ -146,6 +148,10 @@ The browser UI talks to the server only via REST + WS; it does NOT implement the
 - **Logger is the only sanctioned log call.** `src/server/utils/logger.ts` (level-based: debug/info/warn/error). Avoid bare `console.log` in `src/server/**`.
 - **DBus is the BT API**, not bluez-tools/bluetoothctl shell-outs. `dbus-next` in `bluetooth-service.ts`.
 - **State persists in Supabase** (`@supabase/supabase-js`), not local SQLite — multi-device users expect their Pi state in the cloud.
+- **Local device state persists in `/data`.** Auth/session JSON, setup state, analytics queue data, and `wpa_supplicant.conf` must survive A/B slot changes. Do not write user/device state only into the active rootfs.
+- **A/B boot contract:** BOOT is mounted at `/uboot`, root A is partition 2, root B is partition 3, data is partition 4. U-Boot stores slot state in `/uboot/uboot.dat`; `uboot-boot-success` resets the boot counter after local mounts. Do not remove that service or healthy devices can roll back after repeated boots.
+- **Connector self-update artifacts:** Releases must publish `nocturne-connector_<version>_update.img.gz` and `.sha256` next to the full `nocturne-connector_<version>.img.gz`. The `_update` file is a gzipped rootfs image for the inactive slot, not a full SD-card image.
+- **Connector update notifications:** After a Car Thing RPC handshake succeeds, the connector checks the stable connector release channel and sends `notification.show` with category `connector.ota.available` to that Car Thing when a self-update package is available.
 - **Encryption helpers live in one place** (`server/utils/encryption.ts`); don't roll your own.
 
 ## ANTI-PATTERNS
@@ -153,7 +159,7 @@ The browser UI talks to the server only via REST + WS; it does NOT implement the
 - **Don't commit `wpa_supplicant.conf` with real credentials.** The repo file ships with placeholders; users fill it in on the SD card after flash.
 - **Don't add bluetooth handling in `routes/`.** Routes are thin HTTP handlers — push device logic into `services/bluetooth-service.ts` so the WS RPC path can reuse it.
 - **Don't introduce `node-*` packages** without checking Bun compat. The runtime is Bun, not Node — some `node:*` polyfills work, native bindings often don't.
-- **Don't exceed the 60 MB image budget without a reason.** This image is intentionally tiny; pulling in a heavy dep can push it past SD-card-friendly sizes.
+- **Don't add heavy runtime deps without a reason.** A/B booting duplicates the rootfs and adds `/data`, so compressed image size is no longer the old single-rootfs 60 MB target.
 - **Don't run as a non-root user inside the Pi image.** It needs DBus system bus + network config; `LICENSE` tooling assumes root password `nocturne`.
 - **Don't hardcode `nocturne-connector.local` in client code.** Use relative URLs — the UI is served same-origin.
 
@@ -161,7 +167,7 @@ The browser UI talks to the server only via REST + WS; it does NOT implement the
 
 ```bash
 # Build the flashable Pi image (top-level)
-just run                # → output/nocturne-connector_<version>.img.gz + .sha256
+just run                # → output/nocturne-connector_<version>.img.gz + *_update.img.gz + .sha256 files
 
 # Build only the Bun app (no image packaging)
 just connector-api      # bun install + tsc check + vite build, in src/
@@ -187,6 +193,7 @@ cd src && bun install && bun run dev
 - Edit `wpa_supplicant.conf` on the SD card root before first boot.
 - Visit `http://nocturne-connector.local`. If mDNS doesn't resolve, find the Pi's IP via the router.
 - SSH/UART: root password `nocturne`. SSH on port `22` (UART available too — recommended for low-level debug).
+- Manual A/B helpers: `ab_active` prints the current root slot; `ab_flash <update.img.gz>` flashes the inactive slot and switches U-Boot for the next reboot.
 
 ## NOTES
 

@@ -29,10 +29,16 @@ cp "$CONNECTOR_PATH"/tsconfig.json "$ROOTFS_PATH"/etc/nocturne-connector/api/tsc
 
 install -m 755 "$SCRIPTS_PATH"/services/connector-api.sh "$ROOTFS_PATH"/etc/init.d/connector-api
 install -m 755 "$SCRIPTS_PATH"/services/wifi-import.sh "$ROOTFS_PATH"/etc/init.d/wifi-import
+install -m 755 "$SCRIPTS_PATH"/services/ab-root.sh "$ROOTFS_PATH"/etc/init.d/ab-root
+install -m 755 "$SCRIPTS_PATH"/services/connector-data.sh "$ROOTFS_PATH"/etc/init.d/connector-data
+install -m 755 "$SCRIPTS_PATH"/services/uboot-boot-success.sh "$ROOTFS_PATH"/etc/init.d/uboot-boot-success
+
+install -m 755 "$SCRIPTS_PATH"/bin/ab_bootparam.sh "$ROOTFS_PATH"/usr/sbin/ab_bootparam
+install -m 755 "$SCRIPTS_PATH"/bin/ab_active.sh "$ROOTFS_PATH"/usr/sbin/ab_active
+install -m 755 "$SCRIPTS_PATH"/bin/ab_flash.sh "$ROOTFS_PATH"/usr/sbin/ab_flash
 
 echo "$CONNECTOR_IMAGE_VERSION" > "$ROOTFS_PATH"/etc/nocturne-connector/version
 
-mkdir -p "$ROOTFS_PATH"/boot
-
-DEFAULT_SERVICES="${DEFAULT_SERVICES} connector-api"
-BOOT_SERVICES="${BOOT_SERVICES} wifi-import"
+DEFAULT_SERVICES="${DEFAULT_SERVICES} uboot-boot-success connector-api"
+BOOT_SERVICES="${BOOT_SERVICES} connector-data wifi-import"
+SYSINIT_SERVICES="${SYSINIT_SERVICES} ab-root"

@@ -23,6 +23,7 @@ RUN apk add --no-cache \
 	pigz \
 	rsync \
         tar \
+        u-boot-tools \
         util-linux \
         whois \
         xz \
@@ -52,4 +53,3 @@ COPY build.sh /work/
 WORKDIR /work
 
 CMD ["bash", "-c", "cd /work/src && bun install && bun run check && bun run build && cd /work && ./build.sh"]
-

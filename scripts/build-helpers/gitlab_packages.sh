@@ -48,8 +48,8 @@ N="$ARTI-$VER.$EXT"
 FN="$NAME/$VER/$N"
 
 echo "Fetching version: $VER, with name $FN"
-wget "https://gitlab.com/api/v4/projects/$PROJ/packages/generic/$FN"
-wget "https://gitlab.com/api/v4/projects/$PROJ/packages/generic/$FN.sha256"
+curl -fL -O "https://gitlab.com/api/v4/projects/$PROJ/packages/generic/$FN"
+curl -fL -O "https://gitlab.com/api/v4/projects/$PROJ/packages/generic/$FN.sha256"
 
 sha256sum -c "$N.sha256"
 

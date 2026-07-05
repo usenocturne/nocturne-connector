@@ -1,5 +1,6 @@
-/dev/mmcblk0p1  /boot       vfat     defaults,ro          0 2
-/dev/mmcblk0p2  /           ext4     defaults,rw         0 1
+LABEL=BOOT      /uboot      vfat     defaults,ro          0 2
+/dev/root       /           ext4     defaults,rw          0 1
+LABEL=data      /data       ext4     defaults,rw          0 2
 
 proc            /proc       proc     defaults            0 0
 sysfs           /sys        sysfs    defaults            0 0

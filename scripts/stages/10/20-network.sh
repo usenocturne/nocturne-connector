@@ -3,11 +3,16 @@
 "$HELPERS_PATH"/chroot_exec.sh apk add wireless-tools wpa_supplicant wpa_supplicant-openrc nftables eudev udev-init-scripts linux-firmware-brcm bluez bluez-openrc dbus dbus-openrc wireless-regdb iw
 
 mkdir -p "$ROOTFS_PATH"/etc/wpa_supplicant
-cat > "$ROOTFS_PATH"/etc/wpa_supplicant/wpa_supplicant.conf << EOF
+mkdir -p "$ROOTFS_PATH"/usr/share/nocturne-connector/defaults
+cat > "$ROOTFS_PATH"/usr/share/nocturne-connector/defaults/wpa_supplicant.conf << EOF
 ctrl_interface=/run/wpa_supplicant
 update_config=1
 country=US
 EOF
+cp "$ROOTFS_PATH"/usr/share/nocturne-connector/defaults/wpa_supplicant.conf \
+  "$DATAFS_PATH"/etc/wpa_supplicant/wpa_supplicant.conf
+ln -sf /data/etc/wpa_supplicant/wpa_supplicant.conf \
+  "$ROOTFS_PATH"/etc/wpa_supplicant/wpa_supplicant.conf
 
 sed -i '\|default_conf=/etc/wpa_supplicant/wpa_supplicant.conf|a \
   ifup wlan0' "$ROOTFS_PATH"/etc/init.d/wpa_supplicant

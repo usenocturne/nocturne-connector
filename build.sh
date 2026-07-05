@@ -6,6 +6,11 @@ set -e
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 : "${CONNECTOR_IMAGE_VERSION:="v2.0.4-1"}"
 
+: "${UBOOT_PROJ_ID:="32838267"}"
+: "${UBOOT_TOOL_PROJ_ID:="33098050"}"
+: "${UBOOT_PACKAGE:=""}"
+: "${UBOOT_VERSION:=""}"
+
 : "${ALPINE_BUILD:="3.24"}"
 : "${ALPINE_BUILD_PATCH:="1"}"
 
@@ -22,15 +27,16 @@ set -e
 : "${DEFAULT_SERVICES:=""}"
 : "${SHUTDOWN_SERVICES:="killprocs"}"
 
-: "${SIZE_BOOT:="100M"}"
-: "${SIZE_ROOT:="512M"}"
+: "${SIZE_BOOT:="128M"}"
+: "${SIZE_ROOT:="1024M"}"
+: "${SIZE_DATA:="512M"}"
 
 : "${STAGES:="00 10 20 30 40"}"
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Static config
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-REQUIRED_CMDS=(curl zip unzip genimage mkpasswd m4 rsync pigz)
+REQUIRED_CMDS=(curl zip unzip genimage mkpasswd m4 rsync pigz mkimage)
 for cmd in "${REQUIRED_CMDS[@]}"; do
   if ! command -v "$cmd" > /dev/null 2>&1; then
     echo "$cmd is required to run this script."
@@ -43,6 +49,7 @@ SAVED_PWD="$(pwd)"
 WORK_PATH=$(mktemp -d)
 export BOOTFS_PATH="${WORK_PATH}/bootfs"
 export ROOTFS_PATH="${WORK_PATH}/rootfs"
+export DATAFS_PATH="${WORK_PATH}/datafs"
 export OUTPUT_PATH="${SAVED_PWD}/output"
 export CACHE_PATH="${SAVED_PWD}/cache"
 export IMAGE_PATH="${WORK_PATH}/image"
@@ -53,7 +60,7 @@ export HELPERS_PATH="${SAVED_PWD}/scripts/build-helpers"
 export RES_PATH="${SAVED_PWD}/resources"
 DEF_STAGE_PATH="${SAVED_PWD}/scripts/stages"
 
-mkdir -p "$BOOTFS_PATH" "$ROOTFS_PATH" "$OUTPUT_PATH" "$CACHE_PATH" "$IMAGE_PATH"
+mkdir -p "$BOOTFS_PATH" "$ROOTFS_PATH" "$DATAFS_PATH" "$OUTPUT_PATH" "$CACHE_PATH" "$IMAGE_PATH"
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Functions

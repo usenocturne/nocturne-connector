@@ -29,7 +29,7 @@
   - Pi 1 and 2 are not supported due to the lack of onboard Wi-Fi
   - Pi Zero 1 (W) is not supported due to the old architecture
 - SD card
-  - Nocturne Connector is super small (~60 MB), so you have many choices for SD cards
+  - An 8 GB or larger card is required. 
 - Working Wi-Fi network
 - Car Thing with Nocturne 4.0.0 or later installed
 
@@ -54,24 +54,36 @@ All donations are split between the three members of the Nocturne team and go to
 
 ## Building
 
-`curl`, `zip/unzip`, `genimage`, `mkpasswd`, and `m4` binaries are required.
+`curl`, `zip/unzip`, `genimage`, `mkpasswd`, `m4`, and `mkimage` binaries are required.
 
 If you are on an architecture other than arm64, qemu-user-static and binfmt (or use `docker run --rm --privileged multiarch/qemu-user-static --reset -p yes`) are required.
 
-Use the `Justfile`. `just run` will output a flashable `img.gz` in `output`.
+Use the `Justfile`. `just run` will output a flashable `img.gz` in `output`, plus a rootfs-only `_update.img.gz` package used by Connector self-updates.
 
 ```
 $ just -l
 Available recipes:
   connector-api
+  docker-build
+  docker-run
   docker-qemu
   lint
   run
 ```
 
+## Updating
+
+Connector images use an A/B root partition layout. The boot partition runs U-Boot, which selects either root slot A or B and rolls back to the previous slot if a new slot fails to boot twice.
+
+Full SD-card images are named `nocturne-connector_<version>.img.gz`. Self-update packages are named `nocturne-connector_<version>_update.img.gz` and must be published with the matching `.sha256` file in the GitHub release. The web UI Settings page checks for that rootfs-only asset and flashes it to the inactive slot before prompting for a reboot.
+
+Persistent connector state, setup/auth data, analytics queue data, and Wi-Fi config live under `/data` so they survive slot changes.
+
 ## Tinkering (Advanced)
 
 UART (with a TTY) is enabled and is the recommended way to debug and interact with the system. SSH is open on port 22 if you'd like instead. Root password is `nocturne`.
+
+The boot filesystem is mounted read-only at `/uboot`, root slots are `/dev/mmcblk0p2` and `/dev/mmcblk0p3`, and persistent data is `/dev/mmcblk0p4`. Use `ab_active` to inspect the current slot and `ab_flash <update.img.gz>` to manually flash the inactive slot.
 
 ## Credits
 

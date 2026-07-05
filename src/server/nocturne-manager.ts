@@ -2,7 +2,7 @@ import { RPCClient, type RPCClientDelegate } from "./rpc/rpc-client";
 import { SpotifyService } from "./services/spotify-service";
 import { SpotifyCommandDispatcher } from "./services/spotify-commands";
 import { SpotifyWebSocketService, type SpotifyWebSocketDelegate } from "./services/spotify-websocket";
-import { OTAService } from "./services/ota-service";
+import { OTAService, type ConnectorUpdateCheckResponse } from "./services/ota-service";
 import { BluetoothService } from "./services/bluetooth-service";
 import { AuthService } from "./services/auth-service";
 import { SetupStateService } from "./services/setup-state-service";
@@ -37,6 +37,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   private wsBroadcast: WSBroadcast | null = null;
   private downloadedOTAFilePath: string | null = null;
   private cachedPlayerState: any = null;
+  private connectorUpdateCheckPromise: Promise<ConnectorUpdateCheckResponse> | null = null;
 
   constructor() {
     this.authService = new AuthService();
@@ -82,6 +83,9 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
 
   setWSBroadcast(broadcast: WSBroadcast): void {
     this.wsBroadcast = broadcast;
+    this.otaService.setConnectorStatusListener((status) => {
+      this.broadcastToWebSocket("connector.ota.status", status);
+    });
   }
 
   private broadcastToWebSocket(type: string, data: any): void {
@@ -176,9 +180,75 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
       this.recordConnectionAnalytics(deviceInfo);
 
       await this.sendAppReady();
+      void this.checkConnectorUpdateForConnection(connectionID);
     } catch (err) {
       log.error(`Initial ping failed for ${connectionID}: ${err}`);
     }
+  }
+
+  private async checkConnectorUpdateForConnection(connectionID: string): Promise<void> {
+    const status = this.otaService.getConnectorUpdateStatus();
+    if (!status.supported) {
+      log.info("Skipping connector update notification check: A/B boot is not available");
+      return;
+    }
+    if (status.inProgress) {
+      log.info("Skipping connector update notification check: connector update already in progress");
+      return;
+    }
+    if (status.rebootRequired) {
+      log.info("Skipping connector update notification check: connector update already staged");
+      return;
+    }
+
+    let update: ConnectorUpdateCheckResponse;
+    try {
+      update = await this.getConnectorUpdateCheck();
+    } catch (err) {
+      log.warn(`Connector update check on Car Thing connect failed: ${err}`);
+      return;
+    }
+
+    if (!update.updateAvailable || !update.version) {
+      log.info(`No connector update notification sent to ${connectionID}: ${update.message ?? "no update available"}`);
+      return;
+    }
+
+    const conn = this.connections.get(connectionID);
+    if (!conn) return;
+
+    const payload = this.connectorUpdateNotificationPayload(update);
+    try {
+      await conn.rpcClient.sendEvent("notification.show", payload);
+      log.info(`Sent connector update notification (${update.version}) to ${connectionID}`);
+    } catch (err) {
+      log.warn(`Failed to send connector update notification to ${connectionID}: ${err}`);
+    }
+  }
+
+  private getConnectorUpdateCheck(): Promise<ConnectorUpdateCheckResponse> {
+    if (!this.connectorUpdateCheckPromise) {
+      this.connectorUpdateCheckPromise = this.otaService
+        .checkConnectorUpdate("stable")
+        .finally(() => {
+          this.connectorUpdateCheckPromise = null;
+        });
+    }
+    return this.connectorUpdateCheckPromise;
+  }
+
+  private connectorUpdateNotificationPayload(update: ConnectorUpdateCheckResponse): Record<string, unknown> {
+    const displayVersion = update.version?.replace(/^v/i, "") ?? "new";
+    return {
+      id: `connector.ota.available.${update.version}`,
+      title: "Connector update available",
+      body: `Version ${displayVersion} is ready. Open Connector Settings to install it.`,
+      category: "connector.ota.available",
+      timestamp: Date.now(),
+      version: update.version,
+      currentVersion: update.currentVersion,
+      channel: update.channel,
+    };
   }
 
   private recordConnectionAnalytics(deviceInfo: any): void {
