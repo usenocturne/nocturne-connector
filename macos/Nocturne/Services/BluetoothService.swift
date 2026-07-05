@@ -94,13 +94,30 @@ final class BluetoothService: ObservableObject {
     }
 
     private func startSPPServer() {
-        probeListener.onProbe = { [weak self] in
-            self?.handleSerialProbe()
+        probeListener.onProbe = { [weak self] channel in
+            self?.handleProbe(channel: channel)
         }
         probeListener.start()
         if lastError?.contains("SPP") == true || lastError?.contains("Bluetooth is off") == true {
             lastError = nil
         }
+    }
+
+    private func handleProbe(channel: IOBluetoothRFCOMMChannel?) {
+        guard let channel else {
+            handleSerialProbe()
+            return
+        }
+        guard let device = channel.getDevice(), let address = device.addressString else {
+            log.info("RFCOMM probe arrived without a Bluetooth device; falling back to paired-device lookup")
+            handleSerialProbe()
+            return
+        }
+
+        ingest(device: device)
+        recentProbePeer = (address, Date())
+        log.info("Responding to RFCOMM channel \(channel.getID(), privacy: .public) probe from \(address, privacy: .public)")
+        handleChannelOpened(channel, delegateInstalled: false)
     }
 
     private func handleSerialProbe() {
@@ -542,11 +559,22 @@ final class BluetoothService: ObservableObject {
         let key = channelKey(address: address, id: chID)
 
         if let active = activeChannels[key] {
-            if active !== channel {
+            if active === channel {
+                if chID == probeListener.registeredChannel,
+                   activeChannels[channelKey(address: address, id: 2)] == nil {
+                    respondToProbe(from: address)
+                }
+                return
+            }
+
+            if chID == probeListener.registeredChannel {
+                log.info("Replacing stale RFCOMM probe channel for \(address, privacy: .public) ch=\(chID, privacy: .public)")
+                active.close()
+            } else {
                 log.warning("Ignoring duplicate RFCOMM channel for \(address, privacy: .public) ch=\(chID, privacy: .public)")
                 channel.close()
+                return
             }
-            return
         }
 
         log.info("RFCOMM channel opened: \(address, privacy: .public) ch=\(chID, privacy: .public)")

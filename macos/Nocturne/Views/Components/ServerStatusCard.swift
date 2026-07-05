@@ -4,7 +4,7 @@ struct ServerStatusCard: View {
     @EnvironmentObject var bluetooth: BluetoothService
 
     var body: some View {
-        let listening = bluetooth.serverChannel > 0
+        let listening = bluetooth.serverChannel > 0 && bluetooth.serverError == nil
         Card {
             HStack(alignment: .top, spacing: 16) {
                 ZStack {

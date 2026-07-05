@@ -9,15 +9,19 @@ import IOBluetooth
 
 nonisolated final class SerialProbeListener: @unchecked Sendable {
     static let probeChannel: BluetoothRFCOMMChannelID = 3
+    typealias ProbeHandler = @MainActor (_ channel: IOBluetoothRFCOMMChannel?) -> Void
 
     private let log = Logger(subsystem: "com.usenocturne.connector.mac", category: "SerialProbeListener")
     private let path = "/dev/tty.Bluetooth-Incoming-Port"
     private let lock = NSLock()
+    private var bridge: SerialProbeListenerBridge!
+    private var notification: IOBluetoothUserNotification?
     private var running = false
     private var workerStarted = false
+    private var channelNotificationRegistered = false
     private var error: String?
 
-    var onProbe: (@MainActor () -> Void)?
+    var onProbe: ProbeHandler?
     var lastError: String? {
         lock.lock()
         let value = error
@@ -26,7 +30,13 @@ nonisolated final class SerialProbeListener: @unchecked Sendable {
     }
     var registeredChannel: BluetoothRFCOMMChannelID { Self.probeChannel }
 
+    init() {
+        bridge = SerialProbeListenerBridge(owner: self)
+    }
+
     func start() {
+        registerChannelOpenNotification()
+
         lock.lock()
         running = true
         let shouldStartWorker = !workerStarted
@@ -44,7 +54,11 @@ nonisolated final class SerialProbeListener: @unchecked Sendable {
     func stop() {
         lock.lock()
         running = false
+        let existingNotification = notification
+        notification = nil
+        channelNotificationRegistered = false
         lock.unlock()
+        existingNotification?.unregister()
     }
 
     private func isRunning() -> Bool {
@@ -60,14 +74,59 @@ nonisolated final class SerialProbeListener: @unchecked Sendable {
         lock.unlock()
     }
 
+    private func hasChannelOpenNotification() -> Bool {
+        lock.lock()
+        let value = channelNotificationRegistered
+        lock.unlock()
+        return value
+    }
+
+    private func registerChannelOpenNotification() {
+        lock.lock()
+        let alreadyRegistered = notification != nil
+        lock.unlock()
+        guard !alreadyRegistered else { return }
+
+        guard let registered = IOBluetoothRFCOMMChannel.register(
+            forChannelOpenNotifications: bridge,
+            selector: #selector(SerialProbeListenerBridge.rfcommChannelOpened(_:channel:)),
+            withChannelID: Self.probeChannel,
+            direction: kIOBluetoothUserNotificationChannelDirectionIncoming
+        ) else {
+            log.warning("Direct RFCOMM channel \(Self.probeChannel, privacy: .public) probe notifications unavailable; using Bluetooth-Incoming-Port fallback")
+            return
+        }
+
+        lock.lock()
+        notification = registered
+        channelNotificationRegistered = true
+        error = nil
+        lock.unlock()
+        log.info("Listening for incoming RFCOMM probes on channel \(Self.probeChannel, privacy: .public)")
+    }
+
+    fileprivate func handleIncomingProbeChannel(_ channel: IOBluetoothRFCOMMChannel) {
+        guard channel.getID() == Self.probeChannel else { return }
+        let address = channel.getDevice()?.addressString ?? "?"
+        setLastError(nil)
+        log.info("Inbound Car Thing probe opened RFCOMM channel \(Self.probeChannel, privacy: .public) from \(address, privacy: .public)")
+        Task { @MainActor [weak self] in
+            self?.onProbe?(channel)
+        }
+    }
+
     private func run() {
         while isRunning() {
             let fd = open(path, O_RDWR | O_NOCTTY)
             if fd < 0 {
                 let err = errno
                 let message = "Unable to listen on \(path): \(String(cString: strerror(err)))"
-                setLastError(message)
-                log.error("\(message, privacy: .public)")
+                if hasChannelOpenNotification() {
+                    log.debug("Serial probe fallback unavailable: \(message, privacy: .public)")
+                } else {
+                    setLastError(message)
+                    log.error("\(message, privacy: .public)")
+                }
                 Thread.sleep(forTimeInterval: 2)
                 continue
             }
@@ -75,7 +134,7 @@ nonisolated final class SerialProbeListener: @unchecked Sendable {
             setLastError(nil)
             log.info("Inbound Car Thing probe arrived on Bluetooth-Incoming-Port")
             Task { @MainActor [weak self] in
-                self?.onProbe?()
+                self?.onProbe?(nil)
             }
 
             Thread.sleep(forTimeInterval: 1)
@@ -86,6 +145,19 @@ nonisolated final class SerialProbeListener: @unchecked Sendable {
         lock.lock()
         workerStarted = false
         lock.unlock()
+    }
+}
+
+nonisolated final class SerialProbeListenerBridge: NSObject {
+    weak var owner: SerialProbeListener?
+
+    init(owner: SerialProbeListener) {
+        self.owner = owner
+        super.init()
+    }
+
+    @objc func rfcommChannelOpened(_ notification: IOBluetoothUserNotification, channel: IOBluetoothRFCOMMChannel) {
+        owner?.handleIncomingProbeChannel(channel)
     }
 }
 
