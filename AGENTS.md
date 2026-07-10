@@ -123,6 +123,43 @@ grants). Behavior notes:
   new hidden Connect-state device for every reconnect or state fetch; stale
   throwaway peers can make the Car Thing UI fall back to "Not Playing" while
   Spotify is still active.
+- **System-wide media (non-Spotify) rides MediaRemote.** `NowPlayingService`
+  streams macOS Now Playing state and emits the same events the phone app does:
+  `media.nowPlaying.update` (`MediaItemAttributes`/`PlaybackAttributes` maps —
+  duration is sent under both `…InMilliseconds` and the `…InMilliSeconds`
+  casing `nocturne-ui` reads) and `media.nowPlaying.artwork`
+  (`{data: base64 JPEG q0.8 ≤600px, contentType}`), deduped by
+  `bundleID|title|artist|album` — never key artwork off
+  `contentItemIdentifier`, MediaRemote rotates it on every play/pause. Inbound
+  `media.control.*` calls map to MediaRemote commands
+  (play=0/pause=1/toggle=2/next=4/prev=5/shuffle=6/repeat=7);
+  `volumeUp/volumeDown` step the system output volume (CoreAudio), and volume
+  changes are reported back via `device.volume.update {volumePercent}`.
+  MediaRemote is entitlement-gated on macOS 15.4+, so the vendored
+  `macos/Vendor/MediaRemoteAdapter.framework` (BSD-3, see `Vendor/README.md`)
+  is loaded by `/usr/bin/perl` — an entitled Apple platform binary — via the
+  `mediaremote-adapter.pl` script sealed in its Resources; the app never links
+  it. The framework is embedded + re-signed by the "Embed Frameworks" phase.
+  Adapter invocations need absolute paths.
+- **System media is user-toggleable, and forced on while Spotify is skipped.**
+  Settings → Media ("System media", `SessionStore.systemMediaEnabled`, default
+  on) disables the whole MediaRemote pipeline for Spotify-only use: the adapter
+  stream and CoreAudio volume reporting stop, a final `PlaybackStatus:
+  "stopped"` update clears the device, snapshots are dropped so nothing stale
+  replays, and `media.control.*` answers `{status: "disabled"}`. Skipping
+  Spotify (below) overrides the toggle — `NowPlayingService.isActive =
+  isSystemMediaEnabled || isForcedOn`, driven by a `spotify.$authState` sink in
+  `NocturneApp`.
+- **Spotify auth can be skipped, matching nocturne-app's contract.** "Skip for
+  now" in the setup wizard / Spotify tab sets `SessionStore.spotifySkipped` and
+  `SpotifyAuthState.skipped`. While skipped the device receives exactly what
+  the phone sends: `spotify.auth.status` / `spotify.auth.getStatus` =
+  `{authenticated: false, skipped: true}` and `app.ready.spotifySkipped: true`
+  — nocturne-ui then suppresses its auth screen and placeholder-blocks the
+  Spotify sections while other-media Now Playing keeps working. The persisted
+  flag re-derives `.skipped` whenever auth checks land on `.idle`, and is
+  auto-cleared when a link completes (iOS behavior). Do not add extra fields to
+  the skipped payload; the phone sends exactly those two keys.
 - **Release DMGs use Developer ID notarization.** `just macos-dmg` archives the
   macOS target with hardened runtime, exports with `macos/ExportOptions.plist`,
   builds a DMG, submits it with `xcrun notarytool` using the

@@ -10,10 +10,12 @@ struct NocturneApp: App {
     @StateObject private var bluetooth: BluetoothService
     @StateObject private var analytics: AnalyticsService
     @StateObject private var rpc: RPCManager
+    @StateObject private var nowPlaying: NowPlayingService
     @StateObject private var loginItem = LoginItemService()
 
     private let authSpotifySync: AnyCancellable
     private let authAnalyticsSync: AnyCancellable
+    private let skipMediaSync: AnyCancellable
     private let startsInBackground: Bool
 
     init() {
@@ -23,8 +25,10 @@ struct NocturneApp: App {
         let analytics = AnalyticsService(accessTokenProvider: {
             try await auth.currentAccessToken()
         })
+        let nowPlaying = NowPlayingService()
         let rpcManager = RPCManager(
             spotify: spotify,
+            nowPlaying: nowPlaying,
             analytics: analytics,
             currentUserID: { auth.status.user?.id }
         )
@@ -33,11 +37,20 @@ struct NocturneApp: App {
         rpcManager.onStaleConnection = { [weak bluetooth] address in
             bluetooth?.teardownStaleLink(address: address)
         }
+        
+        skipMediaSync = spotify.$authState
+            .map { _ in SessionStore.shared.spotifySkipped }
+            .removeDuplicates()
+            .sink { [weak nowPlaying] skipped in
+                nowPlaying?.setForcedOn(skipped)
+            }
+        nowPlaying.start()
         _auth = StateObject(wrappedValue: auth)
         _spotify = StateObject(wrappedValue: spotify)
         _bluetooth = StateObject(wrappedValue: bluetooth)
         _analytics = StateObject(wrappedValue: analytics)
         _rpc = StateObject(wrappedValue: rpcManager)
+        _nowPlaying = StateObject(wrappedValue: nowPlaying)
 
         let background = SessionStore.shared.setupComplete
             && SessionStore.shared.loadSupabaseTokens() != nil
@@ -101,6 +114,7 @@ struct NocturneApp: App {
             .environmentObject(bluetooth)
             .environmentObject(analytics)
             .environmentObject(rpc)
+            .environmentObject(nowPlaying)
             .environmentObject(loginItem)
             .onAppear { AppDelegate.mainWindowVisibilityChanged(true) }
             .onDisappear { AppDelegate.mainWindowVisibilityChanged(false) }

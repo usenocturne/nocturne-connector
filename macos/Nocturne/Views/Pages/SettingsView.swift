@@ -2,6 +2,8 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var auth: AuthService
+    @EnvironmentObject var spotify: SpotifyService
+    @EnvironmentObject var nowPlaying: NowPlayingService
     @EnvironmentObject var analytics: AnalyticsService
     @EnvironmentObject var loginItem: LoginItemService
 
@@ -100,6 +102,32 @@ struct SettingsView: View {
                                 .font(Theme.font(14))
                                 .foregroundStyle(Theme.destructive)
                                 .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+
+                section("Media") {
+                    Card {
+                        HStack(alignment: .center) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("System media")
+                                    .font(Theme.font(16, .medium))
+                                    .foregroundStyle(Theme.fg)
+                                Text(spotify.authState.isSkipped
+                                     ? "Always on while Spotify is skipped, so Nocturne can still show what's playing."
+                                     : "Show media playing on this Mac from any app on Nocturne. Turn off to use Spotify only.")
+                                    .font(Theme.font(14))
+                                    .foregroundStyle(Theme.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer()
+                            Toggle("", isOn: Binding(
+                                get: { spotify.authState.isSkipped || nowPlaying.isSystemMediaEnabled },
+                                set: { nowPlaying.setSystemMediaEnabled($0) }
+                            ))
+                            .toggleStyle(WebSwitchStyle())
+                            .labelsHidden()
+                            .disabled(spotify.authState.isSkipped)
                         }
                     }
                 }

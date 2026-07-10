@@ -13,6 +13,8 @@ final class SessionStore {
 
     private let setupCompleteKey = "nocturne.setupComplete"
     private let analyticsEnabledKey = "nocturne.analyticsEnabled"
+    private let spotifySkippedKey = "nocturne.spotifySkipped"
+    private let systemMediaEnabledKey = "nocturne.systemMediaEnabled"
 
     func loadSupabaseTokens() -> SupabaseTokens? {
         guard let data = readKeychain(account: supabaseAccount) else { return nil }
@@ -59,6 +61,21 @@ final class SessionStore {
             return UserDefaults.standard.bool(forKey: analyticsEnabledKey)
         }
         set { UserDefaults.standard.set(newValue, forKey: analyticsEnabledKey) }
+    }
+
+    var spotifySkipped: Bool {
+        get { UserDefaults.standard.bool(forKey: spotifySkippedKey) }
+        set { UserDefaults.standard.set(newValue, forKey: spotifySkippedKey) }
+    }
+
+    var systemMediaEnabled: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: systemMediaEnabledKey) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: systemMediaEnabledKey)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: systemMediaEnabledKey) }
     }
 
     private func readKeychain(account: String) -> Data? {

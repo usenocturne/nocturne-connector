@@ -92,6 +92,8 @@ This software was made possible only through the following individuals and open 
 - [Dominic Frye](https://github.com/itsnebulalol)
 - [Neel Patel](https://github.com/68p)
 
+- [ungive/mediaremote-adapter](https://github.com/ungive/mediaremote-adapter)
+
 ### Image
 
 - [gitlab.com/raspi-alpine/builder](https://gitlab.com/raspi-alpine/builder)
@@ -99,6 +101,8 @@ This software was made possible only through the following individuals and open 
 ## License
 
 This project is licensed under the **Apache** license.
+
+Bundled third-party components remain under their own licenses: [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) (BSD-3-Clause) is vendored at `macos/Vendor/` with its full license text, which also ships inside the macOS app bundle.
 
 ---
 

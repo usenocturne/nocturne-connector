@@ -68,7 +68,7 @@ struct SetupWizardView: View {
         switch step {
         case 0: welcomeStep
         case 1: NocturneAuthView()
-        case 2: SpotifyAuthView(onLinked: { advance() })
+        case 2: SpotifyAuthView(onLinked: { advance() }, onSkip: { advance() })
         case 3: BluetoothPairingView()
         case 4: AnalyticsConsentView()
         case 5: doneStep

@@ -6,11 +6,13 @@ import AppKit
 struct SpotifyAuthView: View {
     @EnvironmentObject var spotify: SpotifyService
     var onLinked: (() -> Void)? = nil
+    var onSkip: (() -> Void)? = nil
 
     @State private var loading = false
     @State private var errorMessage: String? = nil
     @State private var wasLinked = false
     @State private var openedURL: String? = nil
+    @State private var confirmSkip = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -33,8 +35,10 @@ struct SpotifyAuthView: View {
                 pollingCard(userCode: userCode, verificationURI: verificationURI)
             case .loading:
                 loadingCard()
-            case .idle, .skipped:
+            case .idle:
                 idleCard()
+            case .skipped:
+                skippedCard()
             }
 
             if let errorMessage {
@@ -51,9 +55,19 @@ struct SpotifyAuthView: View {
             wasLinked = isLinked
             if case .polling(_, _, let uri, _) = newValue { autoOpen(uri) }
             if case .idle = newValue { openedURL = nil }
+            if case .skipped = newValue { openedURL = nil }
         }
         .onAppear {
             wasLinked = spotify.authState.isLinked
+        }
+        .alert("Skip Spotify?", isPresented: $confirmSkip) {
+            Button("Skip", role: .destructive) {
+                spotify.skipSpotify()
+                onSkip?()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Nocturne will only show media playing on this Mac. Spotify features like your library and playlists won't be available on the Car Thing. You can link Spotify at any time.")
         }
     }
 
@@ -155,19 +169,37 @@ struct SpotifyAuthView: View {
     }
 
     private func idleCard() -> some View {
+        linkPromptCard(
+            iconColor: Theme.success,
+            title: "Link your Spotify account",
+            message: "Connect your Spotify account to enable playback control on Nocturne.",
+            showSkip: true
+        )
+    }
+
+    private func skippedCard() -> some View {
+        linkPromptCard(
+            iconColor: Theme.muted,
+            title: "Spotify is skipped",
+            message: "Nocturne shows media playing on this Mac. Link Spotify to unlock your library, playlists, and playback on the Car Thing.",
+            showSkip: false
+        )
+    }
+
+    private func linkPromptCard(iconColor: Color, title: String, message: String, showSkip: Bool) -> some View {
         Card {
             VStack(spacing: 0) {
                 ZStack {
                     RoundedRectangle(cornerRadius: Theme.Radius.xl, style: .continuous)
-                        .fill(Theme.success.opacity(0.1))
-                    Lucide(name: "music", size: 28, color: Theme.success)
+                        .fill(iconColor.opacity(0.1))
+                    Lucide(name: "music", size: 28, color: iconColor)
                 }
                 .frame(width: 56, height: 56)
                 .padding(.bottom, 16)
-                Text("Link your Spotify account")
+                Text(title)
                     .font(Theme.font(18, .medium))
                     .foregroundStyle(Theme.fg)
-                Text("Connect your Spotify account to enable playback control on Nocturne.")
+                Text(message)
                     .font(Theme.font(14))
                     .foregroundStyle(Theme.secondary)
                     .multilineTextAlignment(.center)
@@ -180,6 +212,16 @@ struct SpotifyAuthView: View {
                 }
                 .buttonStyle(.web(.success, size: .lg))
                 .disabled(loading)
+                if showSkip {
+                    Button("Skip for now") {
+                        confirmSkip = true
+                    }
+                    .buttonStyle(.plain)
+                    .font(Theme.font(14))
+                    .foregroundStyle(Theme.muted)
+                    .padding(.top, 12)
+                    .disabled(loading)
+                }
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 32)

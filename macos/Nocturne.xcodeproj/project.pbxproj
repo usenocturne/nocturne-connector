@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		B5B5B5B5B5B5B5B5B5B5B5B5 /* MediaRemoteAdapter.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B6B6B6B6B6B6B6B6B6B6B6B6 /* MediaRemoteAdapter.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
 /* Begin PBXCopyFilesBuildPhase section */
 		A4A4A4A4A4A4A4A4A4A4A4A4 /* Embed Frameworks */ = {
 			isa = PBXCopyFilesBuildPhase;
@@ -13,6 +17,7 @@
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
+				B5B5B5B5B5B5B5B5B5B5B5B5 /* MediaRemoteAdapter.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -20,6 +25,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B6B6B6B6B6B6B6B6B6B6B6B6 /* MediaRemoteAdapter.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MediaRemoteAdapter.framework; path = Vendor/MediaRemoteAdapter.framework; sourceTree = "<group>"; };
 		E6138DE62FB2360700FC9881 /* Nocturne.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Nocturne.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -46,8 +52,17 @@
 			isa = PBXGroup;
 			children = (
 				E6138DE82FB2360700FC9881 /* Nocturne */,
+				F7F7F7F7F7F7F7F7F7F7F7F7 /* Vendor */,
 				E6138DE72FB2360700FC9881 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		F7F7F7F7F7F7F7F7F7F7F7F7 /* Vendor */ = {
+			isa = PBXGroup;
+			children = (
+				B6B6B6B6B6B6B6B6B6B6B6B6 /* MediaRemoteAdapter.framework */,
+			);
+			name = Vendor;
 			sourceTree = "<group>";
 		};
 		E6138DE72FB2360700FC9881 /* Products */ = {

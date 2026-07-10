@@ -7,7 +7,8 @@ import AppKit
 final class SpotifyService: ObservableObject, SpotifyCommandHandling {
     private let log = Log.make(for: "SpotifyService")
 
-    @Published private(set) var authState: SpotifyAuthState = .idle
+    @Published private(set) var authState: SpotifyAuthState =
+        SessionStore.shared.spotifySkipped ? .skipped : .idle
 
     var onDeviceBroadcast: ((String, Any) -> Void)?
 
@@ -48,6 +49,12 @@ final class SpotifyService: ObservableObject, SpotifyCommandHandling {
         }
         core.onAuthState = { [weak self] state in
             guard let self else { return }
+            var state = state
+            if case .linked = state {
+                SessionStore.shared.spotifySkipped = false
+            } else if case .idle = state, SessionStore.shared.spotifySkipped {
+                state = .skipped
+            }
             self.authState = state
             if case .linked = state {
                 Task { [weak self] in
@@ -85,6 +92,11 @@ final class SpotifyService: ObservableObject, SpotifyCommandHandling {
 
     func cancelAuthorization() {
         core.cancelAuthorization()
+    }
+
+    func skipSpotify() {
+        SessionStore.shared.spotifySkipped = true
+        core.setAuthState(.skipped)
     }
 
     func disconnect() async {

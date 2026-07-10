@@ -9,6 +9,7 @@ import IOBluetooth
 final class RPCManager: ObservableObject {
     private let log = Log.make(for: "RPCManager")
     private let spotify: SpotifyService
+    private let nowPlaying: NowPlayingService
     private let analytics: AnalyticsService?
     private let currentUserID: () -> String?
     private let ota = OTAService()
@@ -31,14 +32,18 @@ final class RPCManager: ObservableObject {
     private static let keepAliveFailureLimit = 2
     private var downloadedOTAFileURL: URL? = nil
     private var authObservation: AnyCancellable?
+    private var pendingVolumePercent: Int?
+    private var volumeReportTask: Task<Void, Never>?
     var onStaleConnection: ((String) -> Void)?
 
     init(
         spotify: SpotifyService,
+        nowPlaying: NowPlayingService,
         analytics: AnalyticsService? = nil,
         currentUserID: @escaping () -> String? = { nil }
     ) {
         self.spotify = spotify
+        self.nowPlaying = nowPlaying
         self.analytics = analytics
         self.currentUserID = currentUserID
 
@@ -46,6 +51,23 @@ final class RPCManager: ObservableObject {
             Task { @MainActor [weak self] in
                 await self?.broadcastToDevices(topic: topic, data: RPCValueBridge.pack(data))
             }
+        }
+
+        nowPlaying.onNowPlaying = { [weak self] payload in
+            Task { @MainActor [weak self] in
+                await self?.broadcastToDevices(topic: "media.nowPlaying.update", data: RPCValueBridge.pack(payload))
+            }
+        }
+        nowPlaying.onArtwork = { [weak self] base64 in
+            Task { @MainActor [weak self] in
+                await self?.broadcastToDevices(topic: "media.nowPlaying.artwork", data: .map([
+                    (.string("data"), .string(base64)),
+                    (.string("contentType"), .string("image/jpeg"))
+                ]))
+            }
+        }
+        nowPlaying.onVolumeChanged = { [weak self] percent in
+            self?.queueVolumeUpdate(percent)
         }
 
         authObservation = spotify.$authState
@@ -208,7 +230,7 @@ final class RPCManager: ObservableObject {
                             method: "ping",
                             params: .map([
                                 (.string("message"), .string("keepalive")),
-                                (.string("volumePercent"), .int(50))
+                                (.string("volumePercent"), .int(Int64(self.nowPlaying.currentVolumePercent ?? 50)))
                             ])
                         )
                         self.lastPing = Date()
@@ -273,6 +295,38 @@ final class RPCManager: ObservableObject {
             ]))
         ]))
         log.info("Sent app.ready to \(self.connections.count, privacy: .public) device(s)")
+
+        nowPlaying.replayLatest()
+        if let percent = nowPlaying.currentVolumePercent {
+            await sendVolumeUpdate(percent)
+        }
+    }
+
+    private func queueVolumeUpdate(_ percent: Int) {
+        pendingVolumePercent = percent
+        guard volumeReportTask == nil else { return }
+        volumeReportTask = Task { @MainActor [weak self] in
+            while true {
+                guard let self, let percent = self.pendingVolumePercent else { break }
+                self.pendingVolumePercent = nil
+                await self.sendVolumeUpdate(percent)
+            }
+            self?.volumeReportTask = nil
+        }
+    }
+
+    private func sendVolumeUpdate(_ percent: Int) async {
+        for (_, conn) in connections {
+            do {
+                _ = try await conn.client.call(
+                    method: "device.volume.update",
+                    params: .map([(.string("volumePercent"), .int(Int64(percent)))]),
+                    timeout: 5
+                )
+            } catch {
+                log.warning("device.volume.update failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     private func handleAuthStateChange(_ state: SpotifyAuthState) async {
@@ -303,8 +357,7 @@ final class RPCManager: ObservableObject {
         case .skipped:
             return .map([
                 (.string("authenticated"), .bool(false)),
-                (.string("skipped"), .bool(true)),
-                (.string("needsAuthorization"), .bool(false))
+                (.string("skipped"), .bool(true))
             ])
         case .loading:
             return .map([
@@ -424,6 +477,9 @@ final class RPCManager: ObservableObject {
             ])
 
         default:
+            if method.hasPrefix("media.control.") {
+                return RPCValueBridge.pack(nowPlaying.handleMediaControl(method))
+            }
             if method.hasPrefix("spotify.") {
                 let result = try await spotify.dispatch(method, params: RPCValueBridge.dictionary(params))
                 return RPCValueBridge.pack(result)
