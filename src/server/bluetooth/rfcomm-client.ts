@@ -8,11 +8,13 @@ const AF_BLUETOOTH = 31;
 const SOCK_STREAM = 1;
 const BTPROTO_RFCOMM = 3;
 
-const libc = dlopen("libc.so.6", {
-  socket: { args: ["i32", "i32", "i32"], returns: "i32" },
-  connect: { args: ["i32", "ptr", "i32"], returns: "i32" },
-  close: { args: ["i32"], returns: "i32" },
-});
+function openLibc() {
+  return dlopen("libc.so.6", {
+    socket: { args: ["i32", "i32", "i32"], returns: "i32" },
+    connect: { args: ["i32", "ptr", "i32"], returns: "i32" },
+    close: { args: ["i32"], returns: "i32" },
+  });
+}
 
 function parseAddress(address: string): Uint8Array {
   const sockaddr = new Uint8Array(10);
@@ -23,9 +25,10 @@ function parseAddress(address: string): Uint8Array {
 }
 
 export type ClientDataHandler = (data: Buffer) => void;
-export type ClientDisconnectHandler = () => void;
+export type ClientDisconnectHandler = (address: string) => void;
 
 export class RFCOMMClient {
+  private readonly libc = openLibc();
   private fd: number = -1;
   private onData: ClientDataHandler | null = null;
   private onDisconnect: ClientDisconnectHandler | null = null;
@@ -61,7 +64,11 @@ export class RFCOMMClient {
 
     log.info(`Connecting RFCOMM to ${address} channel ${targetChannel}`);
 
-    const fd = libc.symbols.socket(AF_BLUETOOTH, SOCK_STREAM, BTPROTO_RFCOMM);
+    const fd = this.libc.symbols.socket(
+      AF_BLUETOOTH,
+      SOCK_STREAM,
+      BTPROTO_RFCOMM
+    );
     if (fd < 0) {
       throw new Error(`Failed to create Bluetooth socket (returned ${fd})`);
     }
@@ -69,20 +76,22 @@ export class RFCOMMClient {
     const sockaddr = parseAddress(address);
     sockaddr[8] = targetChannel;
 
-    const ret = libc.symbols.connect(fd, ptr(sockaddr), 10);
+    const ret = this.libc.symbols.connect(fd, ptr(sockaddr), 10);
     if (ret < 0) {
-      libc.symbols.close(fd);
-      throw new Error(`RFCOMM connect to ${address} channel ${targetChannel} failed (returned ${ret})`);
+      this.libc.symbols.close(fd);
+      throw new Error(
+        `RFCOMM connect to ${address} channel ${targetChannel} failed (returned ${ret})`
+      );
     }
 
     this.fd = fd;
     this._connected = true;
     log.info(`RFCOMM connected to ${address} channel ${targetChannel}, fd=${fd}`);
 
-    this.startReadLoop(fd);
+    this.startReadLoop(fd, address);
   }
 
-  private startReadLoop(fd: number): void {
+  private startReadLoop(fd: number, address: string): void {
     const gen = this._generation;
     const buf = Buffer.alloc(4096);
 
@@ -93,18 +102,14 @@ export class RFCOMMClient {
         if (gen !== this._generation) return;
 
         if (err) {
-          log.warn(`RFCOMM read error for ${this._address}: ${err.message}`);
-          this._connected = false;
-          this.fd = -1;
-          this.onDisconnect?.();
+          log.warn(`RFCOMM read error for ${address}: ${err.message}`);
+          this.finishReadLoop(fd, address);
           return;
         }
 
         if (!bytesRead) {
-          log.info(`RFCOMM read loop ended for ${this._address}`);
-          this._connected = false;
-          this.fd = -1;
-          this.onDisconnect?.();
+          log.info(`RFCOMM read loop ended for ${address}`);
+          this.finishReadLoop(fd, address);
           return;
         }
 
@@ -116,14 +121,38 @@ export class RFCOMMClient {
     doRead();
   }
 
+  private finishReadLoop(fd: number, address: string): void {
+    if (this.fd === fd) {
+      try {
+        closeSync(fd);
+      } catch {}
+      this.fd = -1;
+    }
+    this._connected = false;
+    this._generation++;
+    this.onDisconnect?.(address);
+  }
+
   write(data: Buffer | Uint8Array): void {
     if (this.fd < 0 || !this._connected) {
       throw new Error("Not connected");
     }
-    writeSync(this.fd, data);
+    const buffer = Buffer.from(data);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const written = writeSync(
+        this.fd,
+        buffer,
+        offset,
+        buffer.length - offset,
+      );
+      if (written <= 0) throw new Error("RFCOMM write made no progress");
+      offset += written;
+    }
   }
 
   disconnect(): void {
+    this._generation++;
     if (this.fd >= 0) {
       try {
         closeSync(this.fd);

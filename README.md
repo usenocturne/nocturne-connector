@@ -29,9 +29,9 @@
   - Pi 1 and 2 are not supported due to the lack of onboard Wi-Fi
   - Pi Zero 1 (W) is not supported due to the old architecture
 - SD card
-  - An 8 GB or larger card is required. 
+  - An 8 GB or larger card is required.
 - Working Wi-Fi network
-- Car Thing with Nocturne 4.0.0 or later installed
+- Car Thing with Nocturne 4.1.0 or later installed
 
 ## Usage
 
@@ -41,8 +41,8 @@
 4. If you are using Wi-Fi, download [wpa_supplicant.conf](https://raw.githubusercontent.com/usenocturne/nocturne-connector/refs/heads/main/wpa_supplicant.conf), and fill in your SSID and password (inside of quotes). Then, place it on the root of the SD card.
     - If your country is not the United States, replace the `US` in the file with your country code.
 4. Power the Raspberry Pi & visit `nocturne-connector.local` in any browser.
-    - If this does not work, You will need to find the IP address of the Raspberry Pi from your router, and use that IP address instead of `nocturne-connector.local`. 
-5. Finish setting up Nocturne Connector by following the steps on screen. 
+    - If this does not work, You will need to find the IP address of the Raspberry Pi from your router, and use that IP address instead of `nocturne-connector.local`.
+5. Finish setting up Nocturne Connector by following the steps on screen.
 
 ## Donate
 
@@ -92,8 +92,6 @@ This software was made possible only through the following individuals and open 
 - [Dominic Frye](https://github.com/itsnebulalol)
 - [Neel Patel](https://github.com/68p)
 
-- [ungive/mediaremote-adapter](https://github.com/ungive/mediaremote-adapter)
-
 ### Image
 
 - [gitlab.com/raspi-alpine/builder](https://gitlab.com/raspi-alpine/builder)
@@ -101,8 +99,6 @@ This software was made possible only through the following individuals and open 
 ## License
 
 This project is licensed under the **Apache** license.
-
-Bundled third-party components remain under their own licenses: [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) (BSD-3-Clause) is vendored at `macos/Vendor/` with its full license text, which also ships inside the macOS app bundle.
 
 ---
 

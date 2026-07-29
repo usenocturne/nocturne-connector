@@ -19,6 +19,7 @@ import { CONNECTOR_RELEASES_API_URL, OTA_SERVER_URL } from "../config";
 import { runShell } from "../utils/shell";
 import { createLogger } from "../utils/logger";
 import { getConnectorVersion } from "../utils/version";
+import { requireOtaTransferWindow } from "./ota-transfer";
 
 const log = createLogger("OTAService");
 
@@ -262,6 +263,7 @@ export class OTAService {
 
   readChunk(filePath: string, offset: number, size: number): Buffer {
     if (!existsSync(filePath)) throw new Error("Update file not found");
+    requireOtaTransferWindow(size);
 
     const stat = statSync(filePath);
     if (offset < 0 || offset >= stat.size) throw new Error(`Invalid offset: ${offset}`);
@@ -304,6 +306,15 @@ export class OTAService {
       speedBytesPerSecond: null,
     });
 
+    try {
+      return await this.fetchConnectorUpdateCheck(channel);
+    } catch (err) {
+      this.updateConnectorStatus({ stage: "failed", error: formatError(err) });
+      throw err;
+    }
+  }
+
+  private async fetchConnectorUpdateCheck(channel: string): Promise<ConnectorUpdateCheckResponse> {
     const currentVersion = getConnectorVersion();
     const res = await fetch(`${CONNECTOR_RELEASES_API_URL}?per_page=30`, {
       headers: {

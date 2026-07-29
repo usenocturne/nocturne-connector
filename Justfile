@@ -4,17 +4,12 @@ connector-api:
 run: connector-api
     sudo ./build.sh
 
+test:
+    scripts/services/connector-data-grow.test.sh
+    cd src && bun test
+
 lint:
     pre-commit run --all-files
-
-macos-dmg:
-    scripts/build-macos-dmg.sh
-
-macos-dmg-fast:
-    scripts/build-macos-dmg.sh --local
-
-macos-dmg-signed-fast:
-    scripts/build-macos-dmg.sh --skip-notarize
 
 docker-qemu:
     docker run --rm --privileged multiarch/qemu-user-static --reset -p yes

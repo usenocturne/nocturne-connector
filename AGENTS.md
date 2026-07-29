@@ -30,7 +30,6 @@ nocturne-connector/
 ├── resources/                    # Image-build assets
 ├── cache/                        # Build cache (gitignored)
 ├── output/                       # Final flashable image + rootfs self-update image and .sha256 files
-├── macos/                        # Native macOS port of the connector (see "MACOS APP" below)
 └── src/                          # The actual Bun application — gets baked into the Pi rootfs
     ├── package.json              # bun + vite + elysia + react + dbus-next + supabase-js
     ├── bunfig.toml
@@ -66,108 +65,6 @@ nocturne-connector/
         └── hooks/                # useAuth, useWebSocket, ...
 ```
 
-## MACOS APP (`macos/`)
-
-A native SwiftUI port of this connector (`Nocturne.xcodeproj`, single target
-`Nocturne`, bundle id `com.usenocturne.nocturne`) that replaces the Pi: same
-internal Spotify APIs, same RPC/chunking wire format, Bluetooth Classic RFCOMM
-via IOBluetooth. Build with
-`xcodebuild -project Nocturne.xcodeproj -scheme Nocturne build` (automatic
-signing — do NOT disable code signing; the stable signature keeps TCC/keychain
-grants). Behavior notes:
-
-- **Menu bar app + launch at login.** Registers itself as a login item by
-  default on first run (`SMAppService.mainApp`, toggle in Settings → Startup).
-  Once setup is complete, every launch is background-only: no window, accessory
-  activation policy, menu bar icon (dimmed = disconnected). The window opens
-  from the menu bar panel or by reopening the app; closing it returns the app
-  to menu-bar-only. The connector must keep running windowless. Reconnection is
-  probe-first: the daemon opens a short RFCOMM probe to the Mac's
-  Bluetooth-Incoming-Port listener on channel `3`. The Mac responds to that inbound
-  probe by dialing the Car Thing's SPP/RPC channel `2`. macOS can report only the
-  baseband ACL as "Connected" before the probe callback arrives; in that exact
-  paired-Car-Thing/no-RFCOMM state, the Mac may make a bounded channel-2 fallback
-  like the Pi connector. Do not add background sweeps of paired Car Things.
-- **Pairing is never app-driven** — users pair in System Settings → Bluetooth;
-  the app only watches the bond list and manages RFCOMM to bonded Car Things.
-- **Links self-heal.** Two consecutive missed keep-alive pings (15s apart, 30s
-  RPC timeout) tear the link down — including the baseband ACL — and then wait
-  for the next Car Thing probe. This recovers channels whose close was never
-  delivered (Mac sleep, abrupt device power-off) without the Mac polling the Car
-  Thing address. RFCOMM data/close callbacks must match the stored channel
-  object before they ingest bytes or detach RPC; stale duplicate channel-2
-  callbacks can share the same address/channel key as the live link.
-- **Auth must survive overnight network flaps.** The Supabase session JWT is
-  refreshed ahead of expiry and on demand (with a forced retry on PostgREST
-  401); only a definitive token rejection signs out — never a network error.
-  Spotify refresh-token rotations that can't be persisted are retried in the
-  background until they land (a rotated token existing only in memory must not
-  be lost), and `invalid_grant` retries only when the database holds a
-  *different* refresh token. Violating any of these bricks the Spotify grant
-  and the Car Thing UI then looks "disconnected" even though RFCOMM is fine.
-  Wake from sleep must explicitly re-check Spotify auth and reconnect the
-  Dealer socket; do not rely on suspended timers alone after a half-day sleep.
-  Auth restore already triggers the Spotify auth probe; do not add a second
-  unconditional `checkAuthStatus()` during online boot. `SpotifyService`
-  single-flights status checks, and Supabase `spotify_credentials` reads should
-  select only the credential columns they decrypt/use rather than `select=*`.
-  Shared Spotify credential rows used by the iPhone app and macOS connector are
-  encrypted as CryptoKit AES-GCM `combined` payloads (nonce + ciphertext + tag)
-  with PBKDF2-HMAC-SHA256, 100k iterations, salt
-  `com.usenocturne.Nocturne.encryption.v1` + canonical Swift
-  `UUID.uuidString` user ID casing. macOS may read legacy lowercase-user-ID
-  rows, but new writes must stay iOS-compatible.
-- **Spotify Connect identity is stable.** The macOS Dealer registers one
-  persisted hidden `hobs_*` device ID and `spotify.player.state` snapshot reads
-  reuse the live Dealer `Spotify-Connection-Id` when available. Do not create a
-  new hidden Connect-state device for every reconnect or state fetch; stale
-  throwaway peers can make the Car Thing UI fall back to "Not Playing" while
-  Spotify is still active.
-- **System-wide media (non-Spotify) rides MediaRemote.** `NowPlayingService`
-  streams macOS Now Playing state and emits the same events the phone app does:
-  `media.nowPlaying.update` (`MediaItemAttributes`/`PlaybackAttributes` maps —
-  duration is sent under both `…InMilliseconds` and the `…InMilliSeconds`
-  casing `nocturne-ui` reads) and `media.nowPlaying.artwork`
-  (`{data: base64 JPEG q0.8 ≤600px, contentType}`), deduped by
-  `bundleID|title|artist|album` — never key artwork off
-  `contentItemIdentifier`, MediaRemote rotates it on every play/pause. Inbound
-  `media.control.*` calls map to MediaRemote commands
-  (play=0/pause=1/toggle=2/next=4/prev=5/shuffle=6/repeat=7);
-  `volumeUp/volumeDown` step the system output volume (CoreAudio), and volume
-  changes are reported back via `device.volume.update {volumePercent}`.
-  MediaRemote is entitlement-gated on macOS 15.4+, so the vendored
-  `macos/Vendor/MediaRemoteAdapter.framework` (BSD-3, see `Vendor/README.md`)
-  is loaded by `/usr/bin/perl` — an entitled Apple platform binary — via the
-  `mediaremote-adapter.pl` script sealed in its Resources; the app never links
-  it. The framework is embedded + re-signed by the "Embed Frameworks" phase.
-  Adapter invocations need absolute paths.
-- **System media is user-toggleable, and forced on while Spotify is skipped.**
-  Settings → Media ("System media", `SessionStore.systemMediaEnabled`, default
-  on) disables the whole MediaRemote pipeline for Spotify-only use: the adapter
-  stream and CoreAudio volume reporting stop, a final `PlaybackStatus:
-  "stopped"` update clears the device, snapshots are dropped so nothing stale
-  replays, and `media.control.*` answers `{status: "disabled"}`. Skipping
-  Spotify (below) overrides the toggle — `NowPlayingService.isActive =
-  isSystemMediaEnabled || isForcedOn`, driven by a `spotify.$authState` sink in
-  `NocturneApp`.
-- **Spotify auth can be skipped, matching nocturne-app's contract.** "Skip for
-  now" in the setup wizard / Spotify tab sets `SessionStore.spotifySkipped` and
-  `SpotifyAuthState.skipped`. While skipped the device receives exactly what
-  the phone sends: `spotify.auth.status` / `spotify.auth.getStatus` =
-  `{authenticated: false, skipped: true}` and `app.ready.spotifySkipped: true`
-  — nocturne-ui then suppresses its auth screen and placeholder-blocks the
-  Spotify sections while other-media Now Playing keeps working. The persisted
-  flag re-derives `.skipped` whenever auth checks land on `.idle`, and is
-  auto-cleared when a link completes (iOS behavior). Do not add extra fields to
-  the skipped payload; the phone sends exactly those two keys.
-- **Release DMGs use Developer ID notarization.** `just macos-dmg` archives the
-  macOS target with hardened runtime, exports with `macos/ExportOptions.plist`,
-  builds a DMG, submits it with `xcrun notarytool` using the
-  `NOTARY_PROFILE` keychain profile (default `nocturne-notary`), then staples
-  and validates the ticket. `just macos-dmg-fast` is a local ad-hoc DMG smoke
-  test and is not notarizable; `just macos-dmg-signed-fast` requires a
-  Developer ID certificate but skips the notary submit.
-
 ## SERVER ↔ CLIENT WIRE CONTRACT
 
 | Surface          | Protocol                | Notes                                                                         |
@@ -185,10 +82,17 @@ The browser UI talks to the server only via REST + WS; it does NOT implement the
 - **Logger is the only sanctioned log call.** `src/server/utils/logger.ts` (level-based: debug/info/warn/error). Avoid bare `console.log` in `src/server/**`.
 - **DBus is the BT API**, not bluez-tools/bluetoothctl shell-outs. `dbus-next` in `bluetooth-service.ts`.
 - **State persists in Supabase** (`@supabase/supabase-js`), not local SQLite — multi-device users expect their Pi state in the cloud.
+- **Spotify auth checks are single-flighted.** Auth restore already triggers the Spotify auth probe; do not add a second unconditional `checkAuthStatus()` during online boot. `SpotifyService` single-flights status checks, and Supabase `spotify_credentials` reads should select only the credential columns they decrypt/use rather than `select=*`.
+- **Spotify RPC method aliases are normalized at the dispatcher.** The canonical snake-case methods `spotify.artist.top_tracks`, `spotify.auth.get_status`, `spotify.me.recently_played`, `spotify.me.top_artists`, `spotify.me.top_tracks`, and `spotify.radio.top_mix` also accept their legacy camel-case spellings. Keep both forms working because released Car Thing daemons adapt requests for older connector images.
+- **Outbound RFCOMM reconnect is connector-owned.** A client read error or EOF must emit `deviceDisconnected` immediately so `NocturneManager` drops stale RPC state, then redial the last successful outbound address on channel 2 with delays capped at 30 seconds. Successful or manual connects, unpairing, and Bluetooth power-off cancel pending redials. Keep the Bluetooth client and timer dependencies injectable so this state machine remains hardware-independent under Bun tests.
 - **Local device state persists in `/data`.** Auth/session JSON, setup state, analytics queue data, and `wpa_supplicant.conf` must survive A/B slot changes. Do not write user/device state only into the active rootfs.
+- **The data partition expands before first mount.** Partition 4 is deliberately last on disk. `connector-data-grow` runs in `sysinit`, verifies partition 4 is the `data` ext4 filesystem, grows it into the SD card's unused space, checks the unmounted filesystem, and expands it before `localmount`. Full Car Thing OTA packages are staged under `/data`, so do not move this service after `localmount`, weaken the identity checks, or remove its image dependencies.
+- **Connector auth is fail-stable.** Temporary auth API responses, network failures, and UI status request failures must never route an authenticated user back to pairing. Supabase refresh retries include HTTP 408, 425, 429, and every 5xx response. Only explicit sign-out or a definitively rejected session clears local identity. Persist rotated session tokens atomically with mode `0600`.
 - **A/B boot contract:** BOOT is mounted at `/uboot`, root A is partition 2, root B is partition 3, data is partition 4. U-Boot stores slot state in `/uboot/uboot.dat`; `uboot-boot-success` resets the boot counter after local mounts. Do not remove that service or healthy devices can roll back after repeated boots.
 - **Connector self-update artifacts:** Releases must publish `nocturne-connector_<version>_update.img.gz` and `.sha256` next to the full `nocturne-connector_<version>.img.gz`. The `_update` file is a gzipped rootfs image for the inactive slot, not a full SD-card image.
 - **Connector update notifications:** After a Car Thing RPC handshake succeeds, the connector checks the stable connector release channel and sends `notification.show` with category `connector.ota.available` to that Car Thing when a self-update package is available.
+- **Car Thing OTA uses protocol v2:** The Pi connector handles `ota.request_check`, `ota.request_install`, `device.ota.transfer`, and `ota.asset_range*` with the same manifest contract as the mobile and macOS companions. Requests retain `from` and send exact `image_from` and `bandaid_from` version lanes, filling omitted lanes from cached device info and then falling them back to `from` for older daemons. It downloads and verifies the primary package into `/data/nocturne-connector/car-thing-ota`, persists the active session for reconnect resume, advertises checksum-envelope support with a 128 KiB transfer maximum, and requires exact HTTP 206 responses for delta asset ranges. Keep `NOCTURNE_OTA_SERVER_URL` available for local release testing.
+- **OTA traffic is lower priority than control traffic:** RPC chunk writers retain retransmittable envelopes for both `chunked` and `base64-newline` formats. Transfer responses and delta range chunks use the shared 128 KiB window ceiling; tiny request/ack range chunks can saturate RFCOMM control traffic during sustained delta updates. Transfer responses return native MessagePack binary inside bulk envelopes and reject windows over 128 KiB. Bulk OTA chunks yield the send lock between frames without a fixed timer, checksum retransmits use normal priority, and RFCOMM writers loop until the complete frame is written.
 - **Encryption helpers live in one place** (`server/utils/encryption.ts`); don't roll your own.
 
 ## ANTI-PATTERNS
@@ -209,13 +113,11 @@ just run                # → output/nocturne-connector_<version>.img.gz + *_upd
 # Build only the Bun app (no image packaging)
 just connector-api      # bun install + tsc check + vite build, in src/
 
+# Unit tests, including image service tests
+just test
+
 # Lint
 just lint               # pre-commit run --all-files
-
-# macOS connector release DMGs
-just macos-dmg          # Developer ID DMG + notarization/stapling
-just macos-dmg-fast     # local ad-hoc DMG, not notarized
-just macos-dmg-signed-fast # Developer ID DMG, skips notarization
 
 # Cross-arch QEMU helper (registers binfmt for non-arm64 hosts)
 just docker-qemu

@@ -10,6 +10,19 @@ const log = createLogger("SpotifyCommands");
 
 type CommandHandler = (params: any) => Promise<any>;
 
+const LEGACY_SPOTIFY_COMMAND_ALIASES = new Map<string, string>([
+  ["spotify.artist.topTracks", "spotify.artist.top_tracks"],
+  ["spotify.auth.getStatus", "spotify.auth.get_status"],
+  ["spotify.me.recentlyPlayed", "spotify.me.recently_played"],
+  ["spotify.me.topArtists", "spotify.me.top_artists"],
+  ["spotify.me.topTracks", "spotify.me.top_tracks"],
+  ["spotify.radio.topMix", "spotify.radio.top_mix"],
+]);
+
+export function normalizeSpotifyCommand(command: string): string {
+  return LEGACY_SPOTIFY_COMMAND_ALIASES.get(command) ?? command;
+}
+
 export class SpotifyCommandDispatcher {
   private handlers = new Map<string, CommandHandler>();
 
@@ -46,7 +59,7 @@ export class SpotifyCommandDispatcher {
     this.register("spotify.me.shows.contains", (p) => s.handleCheckSavedShows(p));
 
     this.register("spotify.artist.get", (p) => s.handleGetArtist(p).then(filterRecursively));
-    this.register("spotify.artist.topTracks", (p) => s.handleGetArtistTopTracks(p).then(filterRecursively));
+    this.register("spotify.artist.top_tracks", (p) => s.handleGetArtistTopTracks(p).then(filterRecursively));
     this.register("spotify.album.get", (p) => s.handleGetAlbum(p).then(filterRecursively));
     this.register("spotify.album.tracks", (p) => s.handleGetAlbumTracks(p).then(filterRecursively));
     this.register("spotify.playlist.get", (p) => s.handleGetPlaylist(p).then(filterRecursively));
@@ -55,13 +68,13 @@ export class SpotifyCommandDispatcher {
     this.register("spotify.show.episodes", (p) => s.handleGetShowEpisodes(p).then(filterRecursively));
 
     this.register("spotify.me.profile", () => s.handleGetUserProfile());
-    this.register("spotify.me.topArtists", (p) => s.handleGetTopArtists(p).then(filterRecursively));
-    this.register("spotify.me.topTracks", (p) => s.handleGetTopTracks(p).then(filterRecursively));
-    this.register("spotify.me.recentlyPlayed", (p) => s.handleGetRecentlyPlayed(p));
+    this.register("spotify.me.top_artists", (p) => s.handleGetTopArtists(p).then(filterRecursively));
+    this.register("spotify.me.top_tracks", (p) => s.handleGetTopTracks(p).then(filterRecursively));
+    this.register("spotify.me.recently_played", (p) => s.handleGetRecentlyPlayed(p));
 
     this.register("spotify.radio.mixes", () => s.handleGetRadioMixes());
     this.register("spotify.radio.playlist", (p) => s.handleGetRadioPlaylist(p));
-    this.register("spotify.radio.topMix", () => s.handleGetRadioTopMix());
+    this.register("spotify.radio.top_mix", () => s.handleGetRadioTopMix());
     this.register("spotify.radio.discoveries", () => s.handleGetRadioDiscoveries());
 
     this.register("spotify.track.lyrics", (p) => s.handleGetLyrics(p).then(filterLyricsResponse));
@@ -78,19 +91,20 @@ export class SpotifyCommandDispatcher {
   }
 
   async dispatch(command: string, params: any): Promise<any> {
-    const handler = this.handlers.get(command);
+    const normalizedCommand = normalizeSpotifyCommand(command);
+    const handler = this.handlers.get(normalizedCommand);
     if (!handler) throw new Error(`Unknown Spotify command: ${command}`);
 
     try {
       return await handler(params);
     } catch (err: any) {
-      log.error(`Command ${command} failed: ${err.message}`);
+      log.error(`Command ${normalizedCommand} failed: ${err.message}`);
       throw err;
     }
   }
 
   supports(command: string): boolean {
-    return this.handlers.has(command);
+    return this.handlers.has(normalizeSpotifyCommand(command));
   }
 
   get supportedCommands(): string[] {

@@ -11,7 +11,7 @@ output_log="/var/log/connector-api.log"
 error_log="/var/log/connector-api.log"
 
 depend() {
-  need net dbus
+  need connector-data net dbus
   use logger wpa_supplicant bluetooth chronyd
   after wpa_supplicant bluetooth chronyd
 }

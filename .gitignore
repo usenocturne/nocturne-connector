@@ -2,7 +2,6 @@
 /src/connector-api
 /output/
 /cache/
-/build/
 /stages/
 mkcert
 .DS_Store

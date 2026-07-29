@@ -29,11 +29,19 @@ fi
 flash_device="$(ab_bootparam root | sed -E "s/[0-9]+$/${flash_idx}/")"
 echo "Flashing: $flash_device"
 
+gunzip_status="$(mktemp)"
 if [ "$image_file" = "-" ]; then
-  gunzip -c | dd of="$flash_device" status=progress bs=2M iflag=fullblock
+  { gunzip -c && echo 0 >"$gunzip_status" || echo 1 >"$gunzip_status"; } | dd of="$flash_device" status=progress bs=2M iflag=fullblock
 else
-  gunzip -c "$image_file" | dd of="$flash_device" status=progress bs=2M iflag=fullblock
+  { gunzip -c "$image_file" && echo 0 >"$gunzip_status" || echo 1 >"$gunzip_status"; } | dd of="$flash_device" status=progress bs=2M iflag=fullblock
 fi
+
+if [ "$(cat "$gunzip_status")" != "0" ]; then
+  rm -f "$gunzip_status"
+  echo "ERROR: image decompression failed; boot selection left unchanged" >&2
+  exit 1
+fi
+rm -f "$gunzip_status"
 
 if [ "$current_idx" != "$uboot_idx" ]; then
   echo "U-Boot already points at the inactive partition"

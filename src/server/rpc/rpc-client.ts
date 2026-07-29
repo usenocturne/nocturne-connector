@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { encode, decode } from "./msgpack-codec";
-import { createChunks, parseChunk, ChunkedMessageAssembler, crc32 } from "./chunking";
+import { createChunks, parseChunk, ChunkedMessageAssembler } from "./chunking";
 import type { RPCMessage, RPCCallMessage, RPCResultMessage, RPCErrorMessage, RPCEventMessage } from "./protocol";
 import { createResult, createError, createEvent } from "./protocol";
 import { createLogger } from "../utils/logger";
@@ -15,6 +15,20 @@ export interface RPCClientDelegate {
 }
 
 export type WireFormat = "chunked" | "base64-newline" | "raw";
+type SendPriority = "normal" | "bulk";
+
+interface RetainedChunks {
+  chunks: Map<number, Buffer>;
+  sentAt: number;
+}
+
+interface SendWaiter {
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
+const MAX_RETAINED_MESSAGES = 32;
+const RETAINED_MESSAGE_TTL_MS = 2 * 60_000;
 
 export class RPCClient {
   private socket: { write(data: Buffer | Uint8Array): void; end(): void } | null = null;
@@ -22,8 +36,9 @@ export class RPCClient {
   private pendingRequests = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timeout: ReturnType<typeof setTimeout> }>();
   private inputBuffer = Buffer.alloc(0);
   private assembler = new ChunkedMessageAssembler();
-  private sentChunks = new Map<string, Map<number, Buffer>>();
-  private sendMutexQueue: (() => void)[] = [];
+  private sentChunks = new Map<string, RetainedChunks>();
+  private normalSendQueue: SendWaiter[] = [];
+  private bulkSendQueue: SendWaiter[] = [];
   private sendMutexLocked = false;
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
   private connectionId: string;
@@ -197,9 +212,15 @@ export class RPCClient {
         if (this.delegate) {
           const response = await this.delegate.onCall(m.id, m.method, m.params);
           if (response.error) {
-            await this.sendMessage(createError(m.id, response.error));
+            await this.sendMessage(
+              createError(m.id, response.error),
+              priorityForResponseTo(m.method),
+            );
           } else {
-            await this.sendMessage(createResult(m.id, response.result));
+            await this.sendMessage(
+              createResult(m.id, response.result),
+              priorityForResponseTo(m.method),
+            );
           }
         } else {
           await this.sendMessage(createError(m.id, "No handler available"));
@@ -220,7 +241,7 @@ export class RPCClient {
       }, timeoutMs);
 
       this.pendingRequests.set(id, { resolve, reject, timeout });
-      this.sendMessage(msg).catch((err) => {
+      this.sendMessage(msg, priorityForMethod(method)).catch((err) => {
         this.pendingRequests.delete(id);
         clearTimeout(timeout);
         reject(err);
@@ -229,90 +250,133 @@ export class RPCClient {
   }
 
   async sendEvent(topic: string, data: unknown): Promise<void> {
-    await this.sendMessage(createEvent(topic, data));
+    await this.sendMessage(createEvent(topic, data), priorityForTopic(topic));
   }
 
-  private async sendMessage(msg: RPCMessage): Promise<void> {
-    const messageId = (msg as any).id || randomUUID();
+  private async sendMessage(
+    msg: RPCMessage,
+    priority: SendPriority = "normal",
+  ): Promise<void> {
+    const messageId = "id" in msg ? msg.id : randomUUID();
     const encoded = encode(msg);
     if (this.wireFormat === "base64-newline") {
-      const chunks = createChunks(encoded, messageId);
-      for (const chunk of chunks) {
-        const b64 = chunk.toString("base64") + "\n";
-        this.writeToSocket(Buffer.from(b64));
-      }
+      await this.sendFramed(encoded, messageId, priority, true);
     } else if (this.wireFormat === "raw") {
-      this.writeToSocket(encoded);
+      await this.acquireMutex(priority);
+      try {
+        this.writeToSocket(encoded);
+      } finally {
+        this.releaseMutex();
+      }
     } else {
-      await this.sendChunked(encoded, messageId);
+      await this.sendFramed(encoded, messageId, priority, false);
     }
   }
 
-  private async sendChunked(data: Buffer, messageId: string): Promise<void> {
-    await this.acquireMutex();
-    try {
-      const chunks = createChunks(data, messageId);
+  private async sendFramed(
+    data: Buffer,
+    messageId: string,
+    priority: SendPriority,
+    base64Newline: boolean,
+  ): Promise<void> {
+    const chunks = createChunks(data, messageId);
+    this.retainChunks(messageId, chunks);
+    const writeChunk = (chunk: Buffer) => {
+      this.writeToSocket(
+        base64Newline
+          ? Buffer.from(`${chunk.toString("base64")}\n`)
+          : chunk,
+      );
+    };
 
-      const chunkMap = new Map<number, Buffer>();
-      chunks.forEach((chunk, i) => chunkMap.set(i, chunk));
-      this.sentChunks.set(messageId, chunkMap);
-
-      for (let i = 0; i < chunks.length; i++) {
-        this.writeToSocket(chunks[i]);
-        if (i < chunks.length - 1) {
-          await new Promise((r) => setTimeout(r, 5));
-        }
+    if (priority === "normal") {
+      await this.acquireMutex("normal");
+      try {
+        for (const chunk of chunks) writeChunk(chunk);
+      } finally {
+        this.releaseMutex();
       }
-    } finally {
-      this.releaseMutex();
+      return;
+    }
+
+    for (let i = 0; i < chunks.length; i++) {
+      await this.acquireMutex("bulk");
+      try {
+        const chunk = chunks[i];
+        if (chunk) writeChunk(chunk);
+      } finally {
+        this.releaseMutex();
+      }
+    }
+  }
+
+  private retainChunks(messageId: string, chunks: Buffer[]): void {
+    const chunkMap = new Map<number, Buffer>();
+    chunks.forEach((chunk, index) => chunkMap.set(index, chunk));
+    this.sentChunks.delete(messageId);
+    this.sentChunks.set(messageId, { chunks: chunkMap, sentAt: Date.now() });
+    while (this.sentChunks.size > MAX_RETAINED_MESSAGES) {
+      const oldest = this.sentChunks.keys().next().value;
+      if (typeof oldest !== "string") break;
+      this.sentChunks.delete(oldest);
     }
   }
 
   async retransmitChunk(messageId: string, chunkIndex: number): Promise<void> {
-    const chunks = this.sentChunks.get(messageId);
-    const chunk = chunks?.get(chunkIndex);
+    const retained = this.sentChunks.get(messageId);
+    const chunk = retained?.chunks.get(chunkIndex);
     if (!chunk) {
       log.error(`Cannot retransmit chunk ${chunkIndex} for ${messageId}: not found`);
       return;
     }
     log.warn(`Retransmitting chunk ${chunkIndex + 1} for ${messageId}`);
-    this.writeToSocket(chunk);
+    await this.acquireMutex("normal");
+    try {
+      this.writeToSocket(
+        this.wireFormat === "base64-newline"
+          ? Buffer.from(`${chunk.toString("base64")}\n`)
+          : chunk,
+      );
+    } finally {
+      this.releaseMutex();
+    }
   }
 
   private writeToSocket(data: Buffer): void {
     if (!this.socket) {
-      log.warn("Write attempted on closed connection, dropping");
-      return;
+      throw new Error("Write attempted on closed connection");
     }
     this.socket.write(data);
   }
 
-  private async acquireMutex(): Promise<void> {
+  private async acquireMutex(priority: SendPriority): Promise<void> {
     if (!this.sendMutexLocked) {
       this.sendMutexLocked = true;
       return;
     }
-    return new Promise((resolve) => {
-      this.sendMutexQueue.push(resolve);
+    return new Promise((resolve, reject) => {
+      const waiter = { resolve, reject };
+      if (priority === "normal") {
+        this.normalSendQueue.push(waiter);
+      } else {
+        this.bulkSendQueue.push(waiter);
+      }
     });
   }
 
   private releaseMutex(): void {
-    const next = this.sendMutexQueue.shift();
+    const next = this.normalSendQueue.shift() ?? this.bulkSendQueue.shift();
     if (next) {
-      next();
+      next.resolve();
     } else {
       this.sendMutexLocked = false;
     }
   }
 
   private periodicCleanup(): void {
-    if (this.sentChunks.size > 10) {
-      const keys = Array.from(this.sentChunks.keys());
-      const toRemove = keys.slice(0, keys.length - 5);
-      for (const key of toRemove) {
-        this.sentChunks.delete(key);
-      }
+    const cutoff = Date.now() - RETAINED_MESSAGE_TTL_MS;
+    for (const [messageId, retained] of this.sentChunks) {
+      if (retained.sentAt < cutoff) this.sentChunks.delete(messageId);
     }
     if (this.assembler.pendingCount > 5) {
       this.assembler.clear();
@@ -333,6 +397,33 @@ export class RPCClient {
     this.inputBuffer = Buffer.alloc(0);
     this.assembler.clear();
     this.sentChunks.clear();
+    for (const waiter of [...this.normalSendQueue, ...this.bulkSendQueue]) {
+      waiter.reject(new Error("Connection closed"));
+    }
+    this.normalSendQueue.length = 0;
+    this.bulkSendQueue.length = 0;
+    this.sendMutexLocked = false;
     this.socket = null;
   }
+}
+
+function priorityForMethod(method: string): SendPriority {
+  return isBulkMethod(method) ? "bulk" : "normal";
+}
+
+function priorityForResponseTo(method: string): SendPriority {
+  return method === "device.ota.transfer" || method === "ota.transfer"
+    ? "bulk"
+    : "normal";
+}
+
+function priorityForTopic(topic: string): SendPriority {
+  return isBulkMethod(topic) ? "bulk" : "normal";
+}
+
+function isBulkMethod(value: string): boolean {
+  return value === "ota.chunk" ||
+    value === "system.ota.chunk" ||
+    value === "ota.asset_range_chunk" ||
+    value === "system.ota.asset_range_chunk";
 }

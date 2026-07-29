@@ -10,6 +10,50 @@ interface AuthState {
   setupComplete: boolean;
 }
 
+interface AuthProviderState {
+  auth: AuthState;
+  retryPending: boolean;
+}
+
+interface AuthStatusResponse {
+  authenticated: boolean;
+  user: { id: string; email?: string } | null;
+  isInitializing?: boolean;
+  passwordResetPending?: boolean;
+  setupComplete?: boolean;
+}
+
+export function applyAuthStatusSuccess(
+  _state: AuthProviderState,
+  status: AuthStatusResponse
+): AuthProviderState {
+  return {
+    auth: {
+      authenticated: status.authenticated,
+      user: status.user,
+      loading: false,
+      isInitializing: !!status.isInitializing,
+      passwordResetPending: !!status.passwordResetPending,
+      setupComplete: !!status.setupComplete,
+    },
+    retryPending: false,
+  };
+}
+
+export function applyAuthStatusFailure(state: AuthProviderState): AuthProviderState {
+  return {
+    auth: {
+      ...state.auth,
+      loading: state.auth.authenticated ? false : state.auth.loading,
+    },
+    retryPending: true,
+  };
+}
+
+export function shouldPollAuthStatus(state: AuthState, retryPending: boolean): boolean {
+  return state.loading || state.isInitializing || retryPending;
+}
+
 interface AuthContextValue extends AuthState {
   refresh: () => Promise<void>;
   signOut: () => Promise<void>;
@@ -31,47 +75,40 @@ export function useAuth() {
 }
 
 export function useAuthProvider(): AuthContextValue {
-  const [state, setState] = useState<AuthState>({
-    authenticated: false,
-    user: null,
-    loading: true,
-    isInitializing: false,
-    passwordResetPending: false,
-    setupComplete: false,
+  const [providerState, setProviderState] = useState<AuthProviderState>({
+    auth: {
+      authenticated: false,
+      user: null,
+      loading: true,
+      isInitializing: false,
+      passwordResetPending: false,
+      setupComplete: false,
+    },
+    retryPending: false,
   });
+  const { auth: state, retryPending } = providerState;
 
   const refresh = useCallback(async () => {
     try {
-      const status = await get("/api/auth/status");
-      setState({
-        authenticated: status.authenticated,
-        user: status.user,
-        loading: false,
-        isInitializing: !!status.isInitializing,
-        passwordResetPending: !!status.passwordResetPending,
-        setupComplete: !!status.setupComplete,
-      });
+      const status = await get<AuthStatusResponse>("/api/auth/status");
+      setProviderState((current) => applyAuthStatusSuccess(current, status));
     } catch {
-      setState({
-        authenticated: false,
-        user: null,
-        loading: false,
-        isInitializing: false,
-        passwordResetPending: false,
-        setupComplete: false,
-      });
+      setProviderState(applyAuthStatusFailure);
     }
   }, []);
 
   const signOut = useCallback(async () => {
     await post("/api/auth/signout");
-    setState((prev) => ({
-      authenticated: false,
-      user: null,
-      loading: false,
-      isInitializing: false,
-      passwordResetPending: false,
-      setupComplete: prev.setupComplete,
+    setProviderState((current) => ({
+      auth: {
+        authenticated: false,
+        user: null,
+        loading: false,
+        isInitializing: false,
+        passwordResetPending: false,
+        setupComplete: current.auth.setupComplete,
+      },
+      retryPending: false,
     }));
   }, []);
 
@@ -80,12 +117,12 @@ export function useAuthProvider(): AuthContextValue {
   }, [refresh]);
 
   useEffect(() => {
-    if (!state.isInitializing) return;
+    if (!shouldPollAuthStatus(state, retryPending)) return;
     const id = setInterval(() => {
       refresh();
     }, 2000);
     return () => clearInterval(id);
-  }, [state.isInitializing, refresh]);
+  }, [state.loading, state.isInitializing, retryPending, refresh]);
 
   return { ...state, refresh, signOut };
 }

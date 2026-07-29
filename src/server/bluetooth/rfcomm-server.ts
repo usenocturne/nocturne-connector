@@ -115,7 +115,17 @@ export class RFCOMMServer {
     const conn = this.connections.get(devicePath);
     if (!conn) throw new Error(`No connection for ${devicePath}`);
     try {
-      require("fs").writeSync(conn.fd, data);
+      let offset = 0;
+      while (offset < data.length) {
+        const written = require("fs").writeSync(
+          conn.fd,
+          data,
+          offset,
+          data.length - offset,
+        );
+        if (written <= 0) throw new Error("RFCOMM write made no progress");
+        offset += written;
+      }
     } catch (err) {
       log.error(`Write to ${devicePath} failed: ${err}`);
       throw err;

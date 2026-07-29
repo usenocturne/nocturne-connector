@@ -8,7 +8,8 @@ export const WEB_PLAYER_CLIENT_ID = "d8a5ed958d274c2e8ee717e6a4b0971d";
 
 export const PORT = Number(process.env.PORT) || 80;
 
-export const OTA_SERVER_URL = "https://ota.usenocturne.com";
+export const OTA_SERVER_URL =
+  process.env.NOCTURNE_OTA_SERVER_URL ?? "https://ota.usenocturne.com";
 export const CONNECTOR_RELEASES_API_URL =
   "https://api.github.com/repos/usenocturne/nocturne-connector/releases";
 

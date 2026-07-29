@@ -1,6 +1,6 @@
 #!/bin/sh
 
-"$HELPERS_PATH"/chroot_exec.sh apk add libstdc++ libgcc
+"$HELPERS_PATH"/chroot_exec.sh apk add libstdc++ libgcc cloud-utils-growpart e2fsprogs e2fsprogs-extra
 
 BUN_ARCHIVE="bun-linux-aarch64-musl"
 BUN_TMPDIR="${WORK_PATH}/bun-dl"
@@ -12,7 +12,10 @@ unzip -o "${BUN_TMPDIR}/${BUN_ARCHIVE}.zip" -d "$BUN_TMPDIR"
 install -m 755 "${BUN_TMPDIR}/${BUN_ARCHIVE}/bun" "$ROOTFS_PATH"/usr/bin/bun
 rm -rf "$BUN_TMPDIR"
 
-[ -f "$ROOTFS_PATH/usr/bin/bun" ] || { echo "ERROR: bun binary not found after install"; exit 1; }
+[ -f "$ROOTFS_PATH/usr/bin/bun" ] || {
+  echo "ERROR: bun binary not found after install"
+  exit 1
+}
 color_echo "  Installed Bun v${BUN_VERSION} (aarch64-musl)" -Green
 
 mkdir -p "$ROOTFS_PATH"/etc/nocturne-connector/api
@@ -30,6 +33,7 @@ cp "$CONNECTOR_PATH"/tsconfig.json "$ROOTFS_PATH"/etc/nocturne-connector/api/tsc
 install -m 755 "$SCRIPTS_PATH"/services/connector-api.sh "$ROOTFS_PATH"/etc/init.d/connector-api
 install -m 755 "$SCRIPTS_PATH"/services/wifi-import.sh "$ROOTFS_PATH"/etc/init.d/wifi-import
 install -m 755 "$SCRIPTS_PATH"/services/ab-root.sh "$ROOTFS_PATH"/etc/init.d/ab-root
+install -m 755 "$SCRIPTS_PATH"/services/connector-data-grow.sh "$ROOTFS_PATH"/etc/init.d/connector-data-grow
 install -m 755 "$SCRIPTS_PATH"/services/connector-data.sh "$ROOTFS_PATH"/etc/init.d/connector-data
 install -m 755 "$SCRIPTS_PATH"/services/uboot-boot-success.sh "$ROOTFS_PATH"/etc/init.d/uboot-boot-success
 
@@ -41,4 +45,4 @@ echo "$CONNECTOR_IMAGE_VERSION" > "$ROOTFS_PATH"/etc/nocturne-connector/version
 
 DEFAULT_SERVICES="${DEFAULT_SERVICES} uboot-boot-success connector-api"
 BOOT_SERVICES="${BOOT_SERVICES} connector-data wifi-import"
-SYSINIT_SERVICES="${SYSINIT_SERVICES} ab-root"
+SYSINIT_SERVICES="${SYSINIT_SERVICES} ab-root connector-data-grow"

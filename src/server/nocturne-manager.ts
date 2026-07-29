@@ -1,8 +1,19 @@
 import { RPCClient, type RPCClientDelegate } from "./rpc/rpc-client";
 import { SpotifyService } from "./services/spotify-service";
-import { SpotifyCommandDispatcher } from "./services/spotify-commands";
+import {
+  normalizeSpotifyCommand,
+  SpotifyCommandDispatcher,
+} from "./services/spotify-commands";
 import { SpotifyWebSocketService, type SpotifyWebSocketDelegate } from "./services/spotify-websocket";
 import { OTAService, type ConnectorUpdateCheckResponse } from "./services/ota-service";
+import {
+  carThingOtaVersionLanes,
+  CarThingOTAService,
+  type CarThingAvailableUpdate,
+  type CarThingOtaAsset,
+  type CarThingOtaKind,
+  type CarThingOtaVersionLanes,
+} from "./services/car-thing-ota-service";
 import { BluetoothService } from "./services/bluetooth-service";
 import { AuthService } from "./services/auth-service";
 import { SetupStateService } from "./services/setup-state-service";
@@ -11,6 +22,7 @@ import { SpotifyDatabaseStorage } from "./services/spotify-database";
 import { createLogger } from "./utils/logger";
 import { getConnectorVersion } from "./utils/version";
 import { existsSync, statSync } from "fs";
+import { MAX_OTA_TRANSFER_WINDOW_BYTES } from "./services/ota-transfer";
 
 const log = createLogger("NocturneManager");
 
@@ -19,7 +31,20 @@ interface DeviceConnection {
   deviceInfo: any;
 }
 
+export interface CarThingOtaRequestParams {
+  currentVersion: string | null;
+  imageVersion: string | null;
+  bandaidVersion: string | null;
+  channel: string;
+  targetVersion: string | null;
+  targetKind: CarThingOtaKind | null;
+}
+
 type WSBroadcast = (type: string, data: any) => void;
+
+export interface NocturneManagerDependencies {
+  bluetoothService?: BluetoothService;
+}
 
 export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDelegate {
   readonly authService: AuthService;
@@ -28,7 +53,8 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   private spotifyCommands: SpotifyCommandDispatcher;
   private spotifyWebSocket: SpotifyWebSocketService;
   readonly otaService = new OTAService();
-  readonly bluetoothService = new BluetoothService();
+  readonly carThingOtaService = new CarThingOTAService();
+  readonly bluetoothService: BluetoothService;
   readonly setupStateService = new SetupStateService();
 
   private connections = new Map<string, DeviceConnection>();
@@ -38,8 +64,12 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   private downloadedOTAFilePath: string | null = null;
   private cachedPlayerState: any = null;
   private connectorUpdateCheckPromise: Promise<ConnectorUpdateCheckResponse> | null = null;
+  private activeCarThingUpdate: CarThingAvailableUpdate | null = null;
+  private carThingInstallPromise: Promise<void> | null = null;
+  private carThingRangeTasks = new Map<string, AbortController>();
 
-  constructor() {
+  constructor(dependencies: NocturneManagerDependencies = {}) {
+    this.bluetoothService = dependencies.bluetoothService ?? new BluetoothService();
     this.authService = new AuthService();
     const dbStorage = new SpotifyDatabaseStorage(this.authService.client);
     this.spotifyService = new SpotifyService(dbStorage, () => this.authService.currentUser?.id ?? null);
@@ -93,6 +123,13 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   }
 
   async initializeOffline(): Promise<void> {
+    try {
+      this.activeCarThingUpdate = await this.carThingOtaService.activeUpdate();
+    } catch (err) {
+      log.warn(`Discarding invalid persisted Car Thing OTA state: ${errorMessage(err)}`);
+      await this.carThingOtaService.clearActiveUpdate(false);
+      this.activeCarThingUpdate = null;
+    }
     await this.bluetoothService.initialize();
 
     this.bluetoothService.rfcommServer.setDataHandler((devicePath, data) => {
@@ -160,6 +197,10 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
 
     if (this.connections.size === 0) {
       this.stopKeepAlive();
+      for (const controller of this.carThingRangeTasks.values()) {
+        controller.abort();
+      }
+      this.carThingRangeTasks.clear();
     }
 
     this.broadcastToWebSocket("device.disconnected", { devicePath });
@@ -360,6 +401,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   async onCall(id: string, method: string, params: unknown): Promise<{ result?: unknown; error?: string }> {
     log.info(`RPC call: ${method}`);
     const p = (params as any) ?? {};
+    const normalizedMethod = normalizeSpotifyCommand(method);
 
     try {
       if (method === "ping") {
@@ -370,12 +412,12 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
         return { result: { device: "nocturne-connector", version: getConnectorVersion() } };
       }
 
-      if (method === "spotify.auth.getStatus") {
+      if (normalizedMethod === "spotify.auth.get_status") {
         return { result: { authenticated: this.spotifyService.authState.status === "linked", skipped: false } };
       }
 
-      if (method.startsWith("spotify.") && method !== "spotify.auth.getStatus") {
-        const result = await this.spotifyCommands.dispatch(method, p);
+      if (normalizedMethod.startsWith("spotify.")) {
+        const result = await this.spotifyCommands.dispatch(normalizedMethod, p);
         return { result };
       }
 
@@ -413,11 +455,23 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
       }
 
       if (method === "device.ota.transfer") {
+        const active =
+          this.activeCarThingUpdate ??
+          (await this.carThingOtaService.activeUpdate());
+        if (active) {
+          this.activeCarThingUpdate = active;
+          const chunk = await this.carThingOtaService.readPrimaryChunk(
+            active,
+            integerParam(p.offset, 0),
+            integerParam(p.size, MAX_OTA_TRANSFER_WINDOW_BYTES),
+          );
+          return { result: { data: chunk } };
+        }
         if (!this.downloadedOTAFilePath) return { error: "No OTA file available" };
         const chunk = this.otaService.readChunk(
           this.downloadedOTAFilePath,
           p.offset ?? 0,
-          p.size ?? 31680
+          p.size ?? MAX_OTA_TRANSFER_WINDOW_BYTES
         );
         return { result: { data: chunk } };
       }
@@ -463,7 +517,306 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
       }
     } else if (topic === "daemon.ready") {
       this.sendAppReady().catch((err) => log.error(`Failed to send app.ready: ${err}`));
+    } else if (topic === "ota.request_check") {
+      void this.handleCarThingOtaCheck(data);
+    } else if (topic === "ota.request_install") {
+      if (this.carThingInstallPromise) {
+        log.info("Ignoring duplicate OTA install request while one is active");
+        return;
+      }
+      const install = this.handleCarThingOtaInstall(data)
+        .catch((err) => {
+          log.error(`Car Thing OTA install request failed: ${errorMessage(err)}`);
+        })
+        .finally(() => {
+          if (this.carThingInstallPromise === install) {
+            this.carThingInstallPromise = null;
+          }
+        });
+      this.carThingInstallPromise = install;
+    } else if (topic === "ota.asset_range") {
+      void this.handleCarThingAssetRange(data);
+    } else if (topic === "ota.asset_range_abandon") {
+      const requestId = stringParam(asUnknownRecord(data)?.requestId)
+        ?? stringParam(asUnknownRecord(data)?.request_id);
+      if (requestId) {
+        this.carThingRangeTasks.get(requestId)?.abort();
+        this.carThingRangeTasks.delete(requestId);
+      }
+    } else if (topic === "ota.complete") {
+      for (const controller of this.carThingRangeTasks.values()) controller.abort();
+      this.carThingRangeTasks.clear();
+      this.activeCarThingUpdate = null;
+      void this.carThingOtaService
+        .clearActiveUpdate(true)
+        .catch((err) => log.warn(`Failed to clean completed OTA state: ${err}`));
+    } else if (topic === "ota.error") {
+      for (const controller of this.carThingRangeTasks.values()) controller.abort();
+      this.carThingRangeTasks.clear();
     }
+  }
+
+  private otaRPCClient(): RPCClient | null {
+    return this.connections.values().next().value?.rpcClient ?? null;
+  }
+
+  private async handleCarThingOtaCheck(data: unknown): Promise<void> {
+    const client = this.otaRPCClient();
+    if (!client) return;
+    const params = carThingOtaRequestParams(data);
+    const versions = this.carThingOtaVersions(params);
+
+    if (!versions) {
+      await client.sendEvent("ota.check_result", {
+        available: false,
+        channel: params.channel,
+        requiresReflash: false,
+        error: "Device version is unavailable",
+      });
+      return;
+    }
+
+    try {
+      const check = await this.carThingOtaService.checkUpdate(
+        versions.currentVersion,
+        params.channel,
+        versions.imageVersion,
+        versions.bandaidVersion,
+      );
+      await this.sendCarThingCheckResult(client, check.update, check.channel);
+    } catch (err) {
+      const message = errorMessage(err);
+      log.error(`Car Thing OTA check failed: ${message}`);
+      await client.sendEvent("ota.check_result", {
+        available: false,
+        channel: params.channel,
+        requiresReflash: false,
+        error: message,
+      });
+    }
+  }
+
+  private async handleCarThingOtaInstall(data: unknown): Promise<void> {
+    const client = this.otaRPCClient();
+    if (!client) return;
+    const params = carThingOtaRequestParams(data);
+    const versions = this.carThingOtaVersions(params);
+    if (!versions) throw new Error("Device version is unavailable");
+
+    let beganUpdateId: string | null = null;
+    try {
+      const check = await this.carThingOtaService.checkUpdate(
+        versions.currentVersion,
+        params.channel,
+        versions.imageVersion,
+        versions.bandaidVersion,
+      );
+      const update = check.update;
+      if (!update) throw new Error("No update is available to install");
+      if (
+        (params.targetVersion && update.version !== params.targetVersion) ||
+        (params.targetKind && update.kind !== params.targetKind)
+      ) {
+        await this.sendCarThingCheckResult(client, update, check.channel);
+        log.warn(
+          `Refusing changed OTA target ${params.targetVersion ?? "*"}/${params.targetKind ?? "*"}; latest is ${update.version}/${update.kind}`,
+        );
+        return;
+      }
+      if (update.requiresReflash) {
+        throw new Error("This update requires a full reflash");
+      }
+
+      const begin = await client.call("ota.begin", {
+        kind: update.kind,
+        updateId: update.updateId,
+        updateUrlBase: update.updateUrlBase,
+        expectedSha256: update.expectedSha256,
+        expectedSize: update.expectedSize,
+      });
+      beganUpdateId = update.updateId;
+      const resumeFromOffset = integerParam(
+        asUnknownRecord(begin)?.resumeFromOffset ??
+          asUnknownRecord(begin)?.resume_from_offset,
+        0,
+      );
+
+      let lastReportedPercent = -1;
+      let lastReportedAt = 0;
+      await this.carThingOtaService.preparePrimaryArtifact(
+        update,
+        async (downloaded, total) => {
+          const percent = total > 0 ? Math.floor((downloaded / total) * 100) : 0;
+          const now = Date.now();
+          if (
+            percent < 100 &&
+            percent < lastReportedPercent + 5 &&
+            now - lastReportedAt < 15_000
+          ) {
+            return;
+          }
+          lastReportedPercent = percent;
+          lastReportedAt = now;
+          try {
+            await client.call("ota.download_progress", {
+              updateId: update.updateId,
+              percent,
+            });
+          } catch (err) {
+            log.warn(`OTA download progress report failed: ${errorMessage(err)}`);
+          }
+        },
+      );
+
+      await this.carThingOtaService.rememberActiveUpdate(update);
+      this.activeCarThingUpdate = update;
+      await client.sendEvent("ota.package_ready", {
+        updateId: update.updateId,
+        version: update.version,
+        size: update.expectedSize,
+        expectedSha256: update.expectedSha256,
+        resumeFromOffset,
+        maxTransferChunkSize: MAX_OTA_TRANSFER_WINDOW_BYTES,
+        supportsChunkedTransferResponse: true,
+        transferDataEncoding: "msgpack_binary",
+      });
+    } catch (err) {
+      const message = errorMessage(err);
+      log.error(`Car Thing OTA install failed: ${message}`);
+      if (beganUpdateId) {
+        try {
+          await client.call("ota.abandon", { updateId: beganUpdateId });
+        } catch (abandonError) {
+          log.warn(`Failed to abandon OTA ${beganUpdateId}: ${errorMessage(abandonError)}`);
+        }
+      }
+      throw err;
+    }
+  }
+
+  private async handleCarThingAssetRange(data: unknown): Promise<void> {
+    const client = this.otaRPCClient();
+    if (!client) return;
+    const params = asUnknownRecord(data);
+    const requestId =
+      stringParam(params?.requestId) ?? stringParam(params?.request_id);
+    if (!requestId) return;
+
+    const controller = new AbortController();
+    let replied = false;
+    let failurePartIndex = 0;
+    let failureOffset = 0;
+    this.carThingRangeTasks.get(requestId)?.abort();
+    this.carThingRangeTasks.set(requestId, controller);
+    try {
+      const update =
+        this.activeCarThingUpdate ??
+        (await this.carThingOtaService.activeUpdate());
+      if (!update) throw new Error("No active OTA range session");
+      this.activeCarThingUpdate = update;
+      const updateId =
+        stringParam(params?.updateId) ?? stringParam(params?.update_id);
+      if (updateId !== update.updateId) throw new Error("Unknown OTA update ID");
+      const assetName = stringParam(params?.asset);
+      const asset = update.rangeAssets.find((item) => item.name === assetName);
+      if (!asset) throw new Error(`Unknown OTA range asset ${assetName ?? ""}`);
+      const ranges = parseRanges(params?.ranges, asset);
+
+      await client.call("ota.asset_range_reply", {
+        requestId,
+        totalSize: asset.size,
+        parts: ranges,
+      });
+      replied = true;
+
+      for (let partIndex = 0; partIndex < ranges.length; partIndex++) {
+        const range = ranges[partIndex];
+        if (!range) continue;
+        let cursor = 0;
+        while (cursor < range.length) {
+          if (controller.signal.aborted) return;
+          const length = Math.min(
+            MAX_OTA_TRANSFER_WINDOW_BYTES,
+            range.length - cursor,
+          );
+          const offset = range.start + cursor;
+          failurePartIndex = partIndex;
+          failureOffset = offset;
+          const bytes = await this.carThingOtaService.fetchAssetRange(
+            update,
+            asset,
+            offset,
+            length,
+            controller.signal,
+          );
+          cursor += length;
+          const last =
+            partIndex === ranges.length - 1 && cursor === range.length;
+          await client.call("ota.asset_range_chunk", {
+            requestId,
+            partIndex,
+            offset,
+            bytes,
+            last,
+          }, 60_000);
+          if (!last) await Bun.sleep(15);
+        }
+      }
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      const message = errorMessage(err);
+      log.error(`OTA asset range ${requestId} failed: ${message}`);
+      try {
+        if (replied) {
+          await client.call("ota.asset_range_chunk", {
+            requestId,
+            partIndex: failurePartIndex,
+            offset: failureOffset,
+            bytes: Buffer.alloc(0),
+            last: true,
+          });
+        } else {
+          await client.call("ota.asset_range_rejected", {
+            requestId,
+            reason: message,
+          });
+        }
+      } catch (replyError) {
+        log.warn(`Failed to terminate OTA range ${requestId}: ${errorMessage(replyError)}`);
+      }
+    } finally {
+      if (this.carThingRangeTasks.get(requestId) === controller) {
+        this.carThingRangeTasks.delete(requestId);
+      }
+    }
+  }
+
+  private async sendCarThingCheckResult(
+    client: RPCClient,
+    update: CarThingAvailableUpdate | null,
+    channel: string,
+  ): Promise<void> {
+    await client.sendEvent("ota.check_result", {
+      available: update !== null,
+      version: update?.version ?? null,
+      kind: update?.kind ?? null,
+      channel,
+      requiresReflash: update?.requiresReflash ?? false,
+      flashthingZipUrl: update?.flashthingZipUrl ?? null,
+    });
+  }
+
+  private carThingOtaVersions(
+    params: CarThingOtaRequestParams,
+  ): CarThingOtaVersionLanes | null {
+    for (const connection of this.connections.values()) {
+      const versions = carThingOtaRequestVersions(
+        params,
+        connection.deviceInfo,
+      );
+      if (versions) return versions;
+    }
+    return carThingOtaRequestVersions(params, null);
   }
 
   onError(error: Error): void {
@@ -559,4 +912,88 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
       devices,
     };
   }
+}
+
+function asUnknownRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function stringParam(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+function integerParam(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isSafeInteger(value)
+    ? value
+    : fallback;
+}
+
+function otaKindParam(value: string | null): CarThingOtaKind | null {
+  return value === "image" ||
+    value === "daemon" ||
+    value === "builtinWebapp" ||
+    value === "bandaid"
+    ? value
+    : null;
+}
+
+export function carThingOtaRequestParams(
+  data: unknown,
+): CarThingOtaRequestParams {
+  const params = asUnknownRecord(data);
+  return {
+    currentVersion:
+      stringParam(params?.currentVersion) ??
+      stringParam(params?.current_version),
+    imageVersion:
+      stringParam(params?.imageVersion) ?? stringParam(params?.image_version),
+    bandaidVersion:
+      stringParam(params?.bandaidVersion) ??
+      stringParam(params?.bandaid_version),
+    channel: stringParam(params?.channel) ?? "stable",
+    targetVersion:
+      stringParam(params?.targetVersion) ?? stringParam(params?.target_version),
+    targetKind: otaKindParam(
+      stringParam(params?.targetKind) ?? stringParam(params?.target_kind),
+    ),
+  };
+}
+
+export function carThingOtaRequestVersions(
+  params: CarThingOtaRequestParams,
+  deviceInfo: unknown,
+): CarThingOtaVersionLanes | null {
+  const info = asUnknownRecord(deviceInfo);
+  return carThingOtaVersionLanes(
+    params.currentVersion ?? stringParam(info?.version),
+    params.imageVersion ??
+      stringParam(info?.imageVersion) ??
+      stringParam(info?.image_version),
+    params.bandaidVersion ??
+      stringParam(info?.bandaidVersion) ??
+      stringParam(info?.bandaid_version),
+  );
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function parseRanges(
+  value: unknown,
+  asset: CarThingOtaAsset,
+): Array<{ start: number; length: number }> {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error("OTA range request has no ranges");
+  }
+  return value.map((item, index) => {
+    const range = asUnknownRecord(item);
+    const start = integerParam(range?.start, -1);
+    const length = integerParam(range?.length, -1);
+    if (start < 0 || length <= 0 || start + length > asset.size) {
+      throw new Error(`Invalid OTA range ${index} for ${asset.name}`);
+    }
+    return { start, length };
+  });
 }
