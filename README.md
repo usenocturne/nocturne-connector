@@ -25,24 +25,39 @@
 
 ## Prerequisites
 
-- Raspberry Pi with networking
+- Car Thing with Nocturne 4.1.0 or later installed
+- Raspberry Pi with networking, or a Mac with macOS 15.0 or newer
   - Pi 1 and 2 are not supported due to the lack of onboard Wi-Fi
   - Pi Zero 1 (W) is not supported due to the old architecture
-- SD card
+- SD card (Raspberry Pi)
   - An 8 GB or larger card is required.
 - Working Wi-Fi network
-- Car Thing with Nocturne 4.1.0 or later installed
 
 ## Usage
 
-1. Download the [img.gz from the latest release](https://github.com/usenocturne/nocturne-connector/releases/latest)
-2. Use [Raspberry Pi Imager](https://www.raspberrypi.com/software/), [balenaEtcher](https://etcher.balena.io/), or dd to flash the image to your SD card
+<details>
+<summary><img src="https://camo.githubusercontent.com/b9c79d36777ba11fe5423f498b522f7b786898772a1ddbb44074fb6bc59adf06/68747470733a2f2f7573656e6f637475726e652e636f6d2f696d616765732f6c6f676f2e706e67" height="14" style="vertical-align: middle;"> Raspberry Pi</summary>
+
+1. Download the [img.gz from the latest release](https://github.com/usenocturne/nocturne-connector/releases/latest).
+2. Use [Raspberry Pi Imager](https://www.raspberrypi.com/software/), [balenaEtcher](https://etcher.balena.io/), or `dd` to flash the image to your SD card.
     - In Raspberry Pi Imager, click "OS" on the left side and use "Use custom", select your SD card, and press write.
-4. If you are using Wi-Fi, download [wpa_supplicant.conf](https://raw.githubusercontent.com/usenocturne/nocturne-connector/refs/heads/main/wpa_supplicant.conf), and fill in your SSID and password (inside of quotes). Then, place it on the root of the SD card.
+3. If you are using Wi-Fi, download [wpa_supplicant.conf](https://raw.githubusercontent.com/usenocturne/nocturne-connector/refs/heads/main/wpa_supplicant.conf), and fill in your SSID and password (inside of quotes). Then, place it on the root of the SD card.
     - If your country is not the United States, replace the `US` in the file with your country code.
 4. Power the Raspberry Pi & visit `nocturne-connector.local` in any browser.
-    - If this does not work, You will need to find the IP address of the Raspberry Pi from your router, and use that IP address instead of `nocturne-connector.local`.
+    - If this does not work, you will need to find the IP address of the Raspberry Pi from your router, and use that IP address instead of `nocturne-connector.local`.
 5. Finish setting up Nocturne Connector by following the steps on screen.
+
+</details>
+
+<details>
+<summary><img src="https://usenocturne.com/favicon.ico" height="14" style="vertical-align: middle;"> macOS 15.0+ </summary>
+
+1. Download the macOS disk image from the [latest release](https://github.com/usenocturne/nocturne-connector/releases/latest).
+2. Open the disk image and drag Nocturne Connector into your Applications folder.
+3. Open Nocturne Connector from your Applications folder.
+4. Finish setting up Nocturne Connector by following the steps on screen.
+
+</details>
 
 ## Donate
 
