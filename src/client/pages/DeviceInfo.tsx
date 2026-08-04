@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { get } from "../api";
 import { OTAUpdate } from "../components/OTAUpdate";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { formatDisplayVersion } from "@/lib/utils";
 
 export function DeviceInfo() {
   const [device, setDevice] = useState<any>(null);
@@ -35,7 +36,7 @@ export function DeviceInfo() {
             <dl className="w-full space-y-3 text-sm">
               <div className="flex justify-between">
                 <dt className="text-secondary">Version</dt>
-                <dd className="text-fg">{device.version}</dd>
+                <dd className="text-fg">{formatDisplayVersion(device.version)}</dd>
               </div>
               {device.buildDate && (
                 <div className="flex justify-between">

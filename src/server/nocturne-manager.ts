@@ -28,7 +28,18 @@ const log = createLogger("NocturneManager");
 
 interface DeviceConnection {
   rpcClient: RPCClient;
-  deviceInfo: any;
+  deviceInfo: DeviceInfo | null;
+}
+
+export interface DeviceInfo {
+  device: string;
+  version: string;
+  fullVersion: string | null;
+  imageVersion: string | null;
+  bandaidVersion: string | null;
+  buildDate: string | null;
+  gitHash: string | null;
+  serialNumber: string | null;
 }
 
 export interface CarThingOtaRequestParams {
@@ -212,7 +223,9 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
 
     try {
       await conn.rpcClient.call("ping", { message: "RPi connected" });
-      const deviceInfo = await conn.rpcClient.call("device.info", {});
+      const deviceInfo = normalizeDeviceInfo(
+        await conn.rpcClient.call("device.info", {}),
+      );
       conn.deviceInfo = deviceInfo;
 
       log.info(`Initial ping sent to ${connectionID}`);
@@ -957,6 +970,24 @@ export function carThingOtaRequestParams(
     targetKind: otaKindParam(
       stringParam(params?.targetKind) ?? stringParam(params?.target_kind),
     ),
+  };
+}
+
+export function normalizeDeviceInfo(data: unknown): DeviceInfo {
+  const info = asUnknownRecord(data);
+  return {
+    device: stringParam(info?.device) ?? "Nocturne Car Thing",
+    version: stringParam(info?.version) ?? "",
+    fullVersion:
+      stringParam(info?.fullVersion) ?? stringParam(info?.full_version),
+    imageVersion:
+      stringParam(info?.imageVersion) ?? stringParam(info?.image_version),
+    bandaidVersion:
+      stringParam(info?.bandaidVersion) ?? stringParam(info?.bandaid_version),
+    buildDate: stringParam(info?.buildDate) ?? stringParam(info?.build_date),
+    gitHash: stringParam(info?.gitHash) ?? stringParam(info?.git_hash),
+    serialNumber:
+      stringParam(info?.serialNumber) ?? stringParam(info?.serial_number),
   };
 }
 

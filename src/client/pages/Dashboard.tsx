@@ -5,12 +5,35 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Monitor, ChevronRight, RefreshCw, Bluetooth } from "lucide-react";
+import { formatDisplayVersion } from "@/lib/utils";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+
+interface DeviceInfo {
+  device: string;
+  version: string;
+  fullVersion: string | null;
+  imageVersion: string | null;
+  bandaidVersion: string | null;
+  buildDate: string | null;
+  gitHash: string | null;
+  serialNumber: string | null;
+}
+
+interface ConnectedDevice {
+  id: string;
+  deviceInfo: DeviceInfo | null;
+}
+
+interface DeviceStatus {
+  connected: boolean;
+  deviceCount: number;
+  devices: ConnectedDevice[];
+}
 
 const ALL_EVENTS = [
   "device.connected",
@@ -22,8 +45,8 @@ const ALL_EVENTS = [
 ];
 
 export function Dashboard() {
-  const [deviceStatus, setDeviceStatus] = useState<any>(null);
-  const [selectedDevice, setSelectedDevice] = useState<any>(null);
+  const [deviceStatus, setDeviceStatus] = useState<DeviceStatus | null>(null);
+  const [selectedDevice, setSelectedDevice] = useState<ConnectedDevice | null>(null);
 
   const refresh = useCallback(async () => {
     try { setDeviceStatus(await get("/api/device/status")); } catch {}
@@ -57,7 +80,7 @@ export function Dashboard() {
 
       {hasDevices ? (
         <div className="space-y-3">
-          {connectedDevices.map((dev: any) => {
+          {connectedDevices.map((dev) => {
             const info = dev.deviceInfo;
             return (
               <Card
@@ -74,7 +97,7 @@ export function Dashboard() {
                       <div>
                         <p className="font-medium text-fg">{info?.device ?? "Nocturne Car Thing"}</p>
                         <p className="mt-0.5 text-sm text-secondary">
-                          {info?.version ? `Firmware ${info.version}` : "Connected via Bluetooth"}
+                          {info?.version ? `Firmware ${formatDisplayVersion(info.version)}` : "Connected via Bluetooth"}
                         </p>
                       </div>
                     </div>
@@ -114,8 +137,7 @@ export function Dashboard() {
           {selectedDevice?.deviceInfo ? (
             <div className="space-y-3">
               {[
-                ["Firmware", selectedDevice.deviceInfo.version],
-                ["Full Version", selectedDevice.deviceInfo.fullVersion],
+                ["Version", formatDisplayVersion(selectedDevice.deviceInfo.version)],
                 ["Build Date", selectedDevice.deviceInfo.buildDate],
                 ["Git Hash", selectedDevice.deviceInfo.gitHash],
                 ["Serial Number", selectedDevice.deviceInfo.serialNumber],

@@ -2,7 +2,48 @@ import { describe, expect, test } from "bun:test";
 import {
   carThingOtaRequestParams,
   carThingOtaRequestVersions,
+  normalizeDeviceInfo,
 } from "./nocturne-manager";
+
+describe("device info", () => {
+  test("normalizes the daemon's canonical snake-case response", () => {
+    expect(
+      normalizeDeviceInfo({
+        device: "Nocturne (Q01S)",
+        version: "4.1.2",
+        full_version: "4.1.2+20260803231914",
+        image_version: "4.1.1",
+        bandaid_version: "4.1.2",
+        build_date: "2026-08-03T23:19:30Z",
+        git_hash: "abc123",
+        serial_number: "8555RO80Q01S",
+      }),
+    ).toEqual({
+      device: "Nocturne (Q01S)",
+      version: "4.1.2",
+      fullVersion: "4.1.2+20260803231914",
+      imageVersion: "4.1.1",
+      bandaidVersion: "4.1.2",
+      buildDate: "2026-08-03T23:19:30Z",
+      gitHash: "abc123",
+      serialNumber: "8555RO80Q01S",
+    });
+  });
+
+  test("keeps compatibility with camel-case responses", () => {
+    expect(
+      normalizeDeviceInfo({
+        device: "Nocturne",
+        version: "4.1.2",
+        imageVersion: "4.1.1",
+        serialNumber: "SERIAL",
+      }),
+    ).toMatchObject({
+      imageVersion: "4.1.1",
+      serialNumber: "SERIAL",
+    });
+  });
+});
 
 describe("Car Thing OTA request parameters", () => {
   test("parses camel-case version lanes and install target", () => {
