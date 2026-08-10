@@ -20,6 +20,7 @@ type SendPriority = "normal" | "bulk";
 interface RetainedChunks {
   chunks: Map<number, Buffer>;
   sentAt: number;
+  wireFormat: "chunked" | "base64-newline";
 }
 
 interface SendWaiter {
@@ -31,7 +32,7 @@ const MAX_RETAINED_MESSAGES = 32;
 const RETAINED_MESSAGE_TTL_MS = 2 * 60_000;
 
 export class RPCClient {
-  private socket: { write(data: Buffer | Uint8Array): void; end(): void } | null = null;
+  private socket: { write(data: Buffer | Uint8Array): Promise<void>; end(): void } | null = null;
   private delegate: RPCClientDelegate | null = null;
   private pendingRequests = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timeout: ReturnType<typeof setTimeout> }>();
   private inputBuffer = Buffer.alloc(0);
@@ -54,7 +55,7 @@ export class RPCClient {
     return this.connectionId;
   }
 
-  setSocket(socket: { write(data: Buffer | Uint8Array): void; end(): void }): void {
+  setSocket(socket: { write(data: Buffer | Uint8Array): Promise<void>; end(): void }): void {
     this.socket = socket;
   }
 
@@ -211,15 +212,18 @@ export class RPCClient {
         const m = msg as RPCCallMessage;
         if (this.delegate) {
           const response = await this.delegate.onCall(m.id, m.method, m.params);
+          const responseWireFormat = responseWireFormatForCall(m.method, m.params);
           if (response.error) {
             await this.sendMessage(
               createError(m.id, response.error),
               priorityForResponseTo(m.method),
+              responseWireFormat,
             );
           } else {
             await this.sendMessage(
               createResult(m.id, response.result),
               priorityForResponseTo(m.method),
+              responseWireFormat,
             );
           }
         } else {
@@ -256,15 +260,17 @@ export class RPCClient {
   private async sendMessage(
     msg: RPCMessage,
     priority: SendPriority = "normal",
+    wireFormatOverride?: WireFormat,
   ): Promise<void> {
     const messageId = "id" in msg ? msg.id : randomUUID();
     const encoded = encode(msg);
-    if (this.wireFormat === "base64-newline") {
+    const wireFormat = wireFormatOverride ?? this.wireFormat;
+    if (wireFormat === "base64-newline") {
       await this.sendFramed(encoded, messageId, priority, true);
-    } else if (this.wireFormat === "raw") {
+    } else if (wireFormat === "raw") {
       await this.acquireMutex(priority);
       try {
-        this.writeToSocket(encoded);
+        await this.writeToSocket(encoded);
       } finally {
         this.releaseMutex();
       }
@@ -280,19 +286,22 @@ export class RPCClient {
     base64Newline: boolean,
   ): Promise<void> {
     const chunks = createChunks(data, messageId);
-    this.retainChunks(messageId, chunks);
-    const writeChunk = (chunk: Buffer) => {
+    this.retainChunks(
+      messageId,
+      chunks,
+      base64Newline ? "base64-newline" : "chunked",
+    );
+    const writeChunk = (chunk: Buffer) =>
       this.writeToSocket(
         base64Newline
           ? Buffer.from(`${chunk.toString("base64")}\n`)
           : chunk,
       );
-    };
 
     if (priority === "normal") {
       await this.acquireMutex("normal");
       try {
-        for (const chunk of chunks) writeChunk(chunk);
+        for (const chunk of chunks) await writeChunk(chunk);
       } finally {
         this.releaseMutex();
       }
@@ -303,18 +312,26 @@ export class RPCClient {
       await this.acquireMutex("bulk");
       try {
         const chunk = chunks[i];
-        if (chunk) writeChunk(chunk);
+        if (chunk) await writeChunk(chunk);
       } finally {
         this.releaseMutex();
       }
     }
   }
 
-  private retainChunks(messageId: string, chunks: Buffer[]): void {
+  private retainChunks(
+    messageId: string,
+    chunks: Buffer[],
+    wireFormat: "chunked" | "base64-newline",
+  ): void {
     const chunkMap = new Map<number, Buffer>();
     chunks.forEach((chunk, index) => chunkMap.set(index, chunk));
     this.sentChunks.delete(messageId);
-    this.sentChunks.set(messageId, { chunks: chunkMap, sentAt: Date.now() });
+    this.sentChunks.set(messageId, {
+      chunks: chunkMap,
+      sentAt: Date.now(),
+      wireFormat,
+    });
     while (this.sentChunks.size > MAX_RETAINED_MESSAGES) {
       const oldest = this.sentChunks.keys().next().value;
       if (typeof oldest !== "string") break;
@@ -324,7 +341,11 @@ export class RPCClient {
 
   async retransmitChunk(messageId: string, chunkIndex: number): Promise<void> {
     const retained = this.sentChunks.get(messageId);
-    const chunk = retained?.chunks.get(chunkIndex);
+    if (!retained) {
+      log.error(`Cannot retransmit chunk ${chunkIndex} for ${messageId}: not found`);
+      return;
+    }
+    const chunk = retained.chunks.get(chunkIndex);
     if (!chunk) {
       log.error(`Cannot retransmit chunk ${chunkIndex} for ${messageId}: not found`);
       return;
@@ -332,8 +353,8 @@ export class RPCClient {
     log.warn(`Retransmitting chunk ${chunkIndex + 1} for ${messageId}`);
     await this.acquireMutex("normal");
     try {
-      this.writeToSocket(
-        this.wireFormat === "base64-newline"
+      await this.writeToSocket(
+        retained.wireFormat === "base64-newline"
           ? Buffer.from(`${chunk.toString("base64")}\n`)
           : chunk,
       );
@@ -342,11 +363,11 @@ export class RPCClient {
     }
   }
 
-  private writeToSocket(data: Buffer): void {
+  private async writeToSocket(data: Buffer): Promise<void> {
     if (!this.socket) {
       throw new Error("Write attempted on closed connection");
     }
-    this.socket.write(data);
+    await this.socket.write(data);
   }
 
   private async acquireMutex(priority: SendPriority): Promise<void> {
@@ -426,4 +447,24 @@ function isBulkMethod(value: string): boolean {
     value === "system.ota.chunk" ||
     value === "ota.asset_range_chunk" ||
     value === "system.ota.asset_range_chunk";
+}
+
+function responseWireFormatForCall(
+  method: string,
+  params: unknown,
+): WireFormat | undefined {
+  if (method !== "device.ota.transfer" || !isRecord(params)) return undefined;
+
+  const capabilities =
+    params.transport_capabilities ?? params.transportCapabilities;
+  if (!isRecord(capabilities)) return undefined;
+
+  return capabilities.raw_checksum_envelopes === true ||
+    capabilities.rawChecksumEnvelopes === true
+    ? "chunked"
+    : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

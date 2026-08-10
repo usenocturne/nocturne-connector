@@ -83,7 +83,7 @@ class FakeRFCOMMClient implements RFCOMMClientLike {
     this.connected = true;
   }
 
-  write(_data: Buffer | Uint8Array): void {}
+  async write(_data: Buffer | Uint8Array): Promise<void> {}
 
   failNextConnects(count: number): void {
     for (let index = 0; index < count; index++) {
@@ -140,7 +140,7 @@ class FakeRFCOMMServer implements RFCOMMServerLike {
   setDisconnectionHandler(_handler: (devicePath: string) => void): void {}
   setDataHandler(_handler: (devicePath: string, data: Buffer) => void): void {}
   async register(): Promise<void> {}
-  writeToDevice(_devicePath: string, _data: Buffer): void {}
+  async writeToDevice(_devicePath: string, _data: Buffer): Promise<void> {}
 
   getConnections(): Map<string, RFCOMMConnection> {
     return this.connections;

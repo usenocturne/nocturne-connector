@@ -43,7 +43,7 @@ export interface RFCOMMServerLike {
   setDisconnectionHandler(handler: (devicePath: string) => void): void;
   setDataHandler(handler: (devicePath: string, data: Buffer) => void): void;
   register(): Promise<void>;
-  writeToDevice(devicePath: string, data: Buffer): void;
+  writeToDevice(devicePath: string, data: Buffer): Promise<void>;
   getConnections(): Map<string, RFCOMMConnection>;
 }
 
@@ -53,7 +53,7 @@ export interface RFCOMMClientLike {
   setDataHandler(handler: (data: Buffer) => void): void;
   setDisconnectHandler(handler: (address: string) => void): void;
   connect(address: string, channel?: number): Promise<void>;
-  write(data: Buffer | Uint8Array): void;
+  write(data: Buffer | Uint8Array): Promise<void>;
 }
 
 export interface PairingAgentLike {

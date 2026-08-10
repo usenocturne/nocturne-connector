@@ -145,14 +145,22 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
 
     this.bluetoothService.rfcommServer.setDataHandler((devicePath, data) => {
       const conn = this.connections.get(devicePath);
-      if (conn) conn.rpcClient.handleIncomingData(data);
+      if (conn) {
+        void conn.rpcClient.handleIncomingData(data).catch((error) => {
+          log.error(`Inbound RPC handling failed for ${devicePath}: ${errorMessage(error)}`);
+        });
+      }
     });
 
     this.bluetoothService.rfcommOutbound.setDataHandler((data) => {
       const address = this.bluetoothService.rfcommOutbound.address;
       const devicePath = `rfcomm-client:${address}`;
       const conn = this.connections.get(devicePath);
-      if (conn) conn.rpcClient.handleIncomingData(data);
+      if (conn) {
+        void conn.rpcClient.handleIncomingData(data).catch((error) => {
+          log.error(`Outbound RPC handling failed for ${devicePath}: ${errorMessage(error)}`);
+        });
+      }
     });
 
     this.bluetoothService.onEvent((event, data) => {
@@ -182,10 +190,9 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
     rpcClient.setSocket({
       write: (data: Buffer | Uint8Array) => {
         if (isOutbound) {
-          this.bluetoothService.rfcommOutbound.write(Buffer.from(data));
-        } else {
-          this.bluetoothService.rfcommServer.writeToDevice(devicePath, Buffer.from(data));
+          return this.bluetoothService.rfcommOutbound.write(Buffer.from(data));
         }
+        return this.bluetoothService.rfcommServer.writeToDevice(devicePath, Buffer.from(data));
       },
       end: () => {},
     });

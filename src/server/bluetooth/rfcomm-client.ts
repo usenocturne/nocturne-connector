@@ -1,6 +1,7 @@
 import { dlopen, ptr } from "bun:ffi";
-import { read as fsRead, writeSync, closeSync } from "fs";
+import { read as fsRead, closeSync } from "fs";
 import { createLogger } from "../utils/logger";
+import { writeAllAsync } from "./async-fd-writer";
 
 const log = createLogger("RFCOMMClient");
 
@@ -27,6 +28,12 @@ function parseAddress(address: string): Uint8Array {
 export type ClientDataHandler = (data: Buffer) => void;
 export type ClientDisconnectHandler = (address: string) => void;
 
+interface ClientWriteState {
+  fd: number;
+  generation: number;
+  tail: Promise<void>;
+}
+
 export class RFCOMMClient {
   private readonly libc = openLibc();
   private fd: number = -1;
@@ -35,6 +42,7 @@ export class RFCOMMClient {
   private _connected = false;
   private _address = "";
   private _generation = 0;
+  private writeState: ClientWriteState | null = null;
 
   setDataHandler(handler: ClientDataHandler): void {
     this.onData = handler;
@@ -86,6 +94,11 @@ export class RFCOMMClient {
 
     this.fd = fd;
     this._connected = true;
+    this.writeState = {
+      fd,
+      generation: this._generation,
+      tail: Promise.resolve(),
+    };
     log.info(`RFCOMM connected to ${address} channel ${targetChannel}, fd=${fd}`);
 
     this.startReadLoop(fd, address);
@@ -130,25 +143,28 @@ export class RFCOMMClient {
     }
     this._connected = false;
     this._generation++;
+    this.writeState = null;
     this.onDisconnect?.(address);
   }
 
-  write(data: Buffer | Uint8Array): void {
-    if (this.fd < 0 || !this._connected) {
+  write(data: Buffer | Uint8Array): Promise<void> {
+    const state = this.writeState;
+    if (!state || this.fd < 0 || !this._connected) {
       throw new Error("Not connected");
     }
     const buffer = Buffer.from(data);
-    let offset = 0;
-    while (offset < buffer.length) {
-      const written = writeSync(
-        this.fd,
-        buffer,
-        offset,
-        buffer.length - offset,
-      );
-      if (written <= 0) throw new Error("RFCOMM write made no progress");
-      offset += written;
-    }
+    const isCurrent = () =>
+      this.writeState === state &&
+      this.fd === state.fd &&
+      this._generation === state.generation &&
+      this._connected;
+    const write = state.tail
+      .catch((error) => {
+        log.warn(`Previous RFCOMM write failed: ${error}`);
+      })
+      .then(() => writeAllAsync(state.fd, buffer, isCurrent));
+    state.tail = write;
+    return write;
   }
 
   disconnect(): void {
@@ -160,5 +176,6 @@ export class RFCOMMClient {
       this.fd = -1;
     }
     this._connected = false;
+    this.writeState = null;
   }
 }

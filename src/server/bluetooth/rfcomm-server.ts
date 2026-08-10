@@ -1,5 +1,6 @@
 import { createLogger } from "../utils/logger";
 import { RFCOMM_UUID } from "../config";
+import { writeAllAsync } from "./async-fd-writer";
 
 const log = createLogger("RFCOMMServer");
 
@@ -14,6 +15,12 @@ export type ConnectionHandler = (conn: RFCOMMConnection) => void;
 export type DisconnectionHandler = (devicePath: string) => void;
 export type DataHandler = (devicePath: string, data: Buffer) => void;
 
+interface ServerWriteState {
+  connection: RFCOMMConnection;
+  fd: number;
+  tail: Promise<void>;
+}
+
 export class RFCOMMServer {
   private bus: any = null;
   private profilePath = "/com/usenocturne/rfcomm";
@@ -21,6 +28,7 @@ export class RFCOMMServer {
   private onDisconnection: DisconnectionHandler | null = null;
   private onData: DataHandler | null = null;
   private connections = new Map<string, RFCOMMConnection>();
+  private writeStates = new Map<string, ServerWriteState>();
 
   setConnectionHandler(handler: ConnectionHandler): void {
     this.onConnection = handler;
@@ -57,13 +65,19 @@ export class RFCOMMServer {
           const address = device.split("/").pop()?.replace(/_/g, ":") ?? "";
           const conn: RFCOMMConnection = { devicePath: device, address, fd, stream: null };
           server.connections.set(device, conn);
-          server.setupFdReading(device, fd);
+          server.writeStates.set(device, {
+            connection: conn,
+            fd,
+            tail: Promise.resolve(),
+          });
+          server.setupFdReading(conn);
           server.onConnection?.(conn);
         }
 
         RequestDisconnection(device: string) {
           log.info(`RFCOMM disconnection requested: ${device}`);
           server.connections.delete(device);
+          server.writeStates.delete(device);
           server.onDisconnection?.(device);
         }
 
@@ -90,7 +104,8 @@ export class RFCOMMServer {
     }
   }
 
-  private setupFdReading(devicePath: string, fd: number): void {
+  private setupFdReading(connection: RFCOMMConnection): void {
+    const { devicePath, fd } = connection;
     const readable = Bun.file(fd);
     const reader = readable.stream().getReader();
 
@@ -104,32 +119,38 @@ export class RFCOMMServer {
           }
         }
       } catch {}
-      this.connections.delete(devicePath);
-      this.onDisconnection?.(devicePath);
+      if (this.connections.get(devicePath) === connection) {
+        this.connections.delete(devicePath);
+        this.writeStates.delete(devicePath);
+        this.onDisconnection?.(devicePath);
+      }
     };
 
     readLoop();
   }
 
-  writeToDevice(devicePath: string, data: Buffer): void {
+  writeToDevice(devicePath: string, data: Buffer): Promise<void> {
     const conn = this.connections.get(devicePath);
-    if (!conn) throw new Error(`No connection for ${devicePath}`);
-    try {
-      let offset = 0;
-      while (offset < data.length) {
-        const written = require("fs").writeSync(
-          conn.fd,
-          data,
-          offset,
-          data.length - offset,
-        );
-        if (written <= 0) throw new Error("RFCOMM write made no progress");
-        offset += written;
-      }
-    } catch (err) {
-      log.error(`Write to ${devicePath} failed: ${err}`);
-      throw err;
+    const state = this.writeStates.get(devicePath);
+    if (!conn || !state || state.connection !== conn) {
+      throw new Error(`No connection for ${devicePath}`);
     }
+    const buffer = Buffer.from(data);
+    const isCurrent = () =>
+      this.connections.get(devicePath) === conn &&
+      this.writeStates.get(devicePath) === state &&
+      conn.fd === state.fd;
+    const write = state.tail
+      .catch((error) => {
+        log.warn(`Previous write to ${devicePath} failed: ${error}`);
+      })
+      .then(() => writeAllAsync(conn.fd, buffer, isCurrent))
+      .catch((error) => {
+        log.error(`Write to ${devicePath} failed: ${error}`);
+        throw error;
+      });
+    state.tail = write;
+    return write;
   }
 
   getConnections(): Map<string, RFCOMMConnection> {
