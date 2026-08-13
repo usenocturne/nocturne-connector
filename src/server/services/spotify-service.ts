@@ -12,6 +12,43 @@ import { base62ToHex, hexToBase62 } from "../utils/base62";
 
 const log = createLogger("SpotifyService");
 
+export const LRCLIB_USER_AGENT = SPOTIFY_USER_AGENT;
+
+export interface LyricsLookupRequest {
+  contentId?: string;
+  trackName?: string;
+  artistName?: string;
+}
+
+function firstString(params: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = params[key];
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return undefined;
+}
+
+export function normalizeLyricsRequest(params: Record<string, unknown>): LyricsLookupRequest {
+  return {
+    contentId: firstString(params, ["content_id", "contentId", "track_id", "trackId", "id"]),
+    trackName: firstString(params, ["track_name", "trackName"]),
+    artistName: firstString(params, ["artist_name", "artistName"]),
+  };
+}
+
+export function buildLrcLibUrl(trackName: string, artistName: string): string {
+  const queryParams = new URLSearchParams({
+    track_name: trackName,
+    artist_name: artistName,
+  });
+  return `https://lrclib.net/api/get?${queryParams}`;
+}
+
+export function shouldUseSpotifyColorLyrics(contentId: unknown): contentId is string {
+  const normalized = typeof contentId === "string" ? contentId.trim().toLowerCase() : "";
+  return normalized.length > 0 && !normalized.startsWith("spotify:local:");
+}
+
 export class NotAuthenticatedError extends Error {
   constructor(message = "Not authenticated") {
     super(message);
@@ -1951,49 +1988,50 @@ export class SpotifyService {
   }
 
   async handleGetLyrics(params: any): Promise<any> {
-    const trackId = params.trackId || params.track_id || params.id;
-    try {
-      const accessToken = await this.getValidAccessToken();
-      const res = await fetch(
-        `https://spclient.wg.spotify.com/color-lyrics/v2/track/${trackId}?format=json&vocalRemoval=false&market=from_token`,
-        {
-          headers: {
-            Accept: "application/json",
-            "App-Platform": "WebPlayer",
-            Authorization: `Bearer ${accessToken}`,
-          },
-        }
-      );
+    const request = normalizeLyricsRequest(params);
+    const trackId = request.contentId;
+    if (shouldUseSpotifyColorLyrics(trackId)) {
+      try {
+        const accessToken = await this.getValidAccessToken();
+        const res = await fetch(
+          `https://spclient.wg.spotify.com/color-lyrics/v2/track/${trackId}?format=json&vocalRemoval=false&market=from_token`,
+          {
+            headers: {
+              Accept: "application/json",
+              "App-Platform": "WebPlayer",
+              Authorization: `Bearer ${accessToken}`,
+            },
+          }
+        );
 
-      if (res.ok) {
-        const data = await res.json();
-        const filtered = this.filterLyricsResponse(data);
-        if (filtered?.lyrics?.lines?.length > 0) {
-          return filtered;
+        if (res.ok) {
+          const data = await res.json();
+          const filtered = this.filterLyricsResponse(data);
+          if (filtered?.lyrics?.lines?.length > 0) {
+            return filtered;
+          }
         }
+      } catch (error) {
+        log.debug(`Spotify color lyrics unavailable: ${error}`);
       }
-    } catch {}
+    }
 
-    const trackName = params.trackName || params.track_name;
-    const artistName = params.artistName || params.artist_name;
-    const albumName = params.albumName || params.album_name;
-    const duration = params.duration;
+    const trackName = request.trackName;
+    const artistName = request.artistName;
 
     if (trackName && artistName) {
-      return this.fetchLrcLibLyrics(trackName, artistName, albumName, duration);
+      return this.fetchLrcLibLyrics(trackName, artistName);
     }
     return { lyrics: { lines: [], syncType: "NOT_SYNCED" } };
   }
 
-  private async fetchLrcLibLyrics(trackName: string, artistName: string, albumName?: string, duration?: number): Promise<any> {
-    const queryParams = new URLSearchParams({
-      track_name: trackName,
-      artist_name: artistName,
+  private async fetchLrcLibLyrics(trackName: string, artistName: string): Promise<any> {
+    const res = await fetch(buildLrcLibUrl(trackName, artistName), {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": LRCLIB_USER_AGENT,
+      },
     });
-    if (albumName) queryParams.set("album_name", albumName);
-    if (duration) queryParams.set("duration", String(Math.floor(duration / 1000)));
-
-    const res = await fetch(`https://lrclib.net/api/get?${queryParams}`);
     if (!res.ok) return { lyrics: { lines: [], syncType: "NOT_SYNCED" } };
 
     const data = await res.json();
