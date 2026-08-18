@@ -3,12 +3,18 @@ import {
   WEB_PLAYER_CLIENT_ID,
   SPOTIFY_SCOPES,
   SPOTIFY_USER_AGENT,
+  SPOTIFY_APP_PLATFORM,
   SPOTIFY_APP_VERSION,
   SpotifyOperationHash,
 } from "../config";
 import { SpotifyDatabaseStorage, type SpotifyDatabaseCredentials } from "./spotify-database";
 import { createLogger } from "../utils/logger";
 import { base62ToHex, hexToBase62 } from "../utils/base62";
+import {
+  createSpotifyCollectionClientUpdateId,
+  splitSpotifyLibraryTrackReferences,
+  writeSpotifyLocalTracks,
+} from "./spotify-collection";
 
 const log = createLogger("SpotifyService");
 
@@ -365,6 +371,7 @@ export class SpotifyService {
       tokenType: data.token_type,
       accessTokenExpiresAt: expiresAt,
     };
+    this._spotifyUserId = null;
 
     await this.dbStorage.saveCredentials(
       data.access_token,
@@ -398,6 +405,7 @@ export class SpotifyService {
       }
     }
     this.cachedCredentials = null;
+    this._spotifyUserId = null;
     this.setAuthState({ status: "idle" });
   }
 
@@ -1257,19 +1265,53 @@ export class SpotifyService {
   }
 
   async handleSaveTracks(params: any): Promise<any> {
-    const uris = (params.track_ids || params.ids || params.uris || []).map((id: string) =>
-      id.startsWith("spotify:") ? id : `spotify:track:${id}`
-    );
-    await this.performPathfinderRequest("addToLibrary", SpotifyOperationHash.addToLibrary, { libraryItemUris: uris });
+    const ids: string[] = params.track_ids || params.ids || params.uris || [];
+    const { localUris, libraryItemUris } =
+      splitSpotifyLibraryTrackReferences(ids);
+
+    if (localUris.length > 0) {
+      await this.writeLocalCollectionTracks(localUris, false);
+    }
+
+    if (libraryItemUris.length > 0) {
+      await this.performPathfinderRequest("addToLibrary", SpotifyOperationHash.addToLibrary, { libraryItemUris });
+    }
     return { success: true };
   }
 
   async handleRemoveTracks(params: any): Promise<any> {
-    const uris = (params.track_ids || params.ids || params.uris || []).map((id: string) =>
-      id.startsWith("spotify:") ? id : `spotify:track:${id}`
-    );
-    await this.performPathfinderRequest("removeFromLibrary", SpotifyOperationHash.removeFromLibrary, { libraryItemUris: uris });
+    const ids: string[] = params.track_ids || params.ids || params.uris || [];
+    const { localUris, libraryItemUris } =
+      splitSpotifyLibraryTrackReferences(ids);
+
+    if (localUris.length > 0) {
+      await this.writeLocalCollectionTracks(localUris, true);
+    }
+
+    if (libraryItemUris.length > 0) {
+      await this.performPathfinderRequest("removeFromLibrary", SpotifyOperationHash.removeFromLibrary, { libraryItemUris });
+    }
     return { success: true };
+  }
+
+  private async writeLocalCollectionTracks(uris: string[], isRemoved: boolean): Promise<void> {
+    const username = await this.getSpotifyUserId();
+    if (!username) throw new Error("Unable to resolve Spotify username for local-file collection write");
+    const accessToken = await this.getValidAccessToken();
+    const clientToken = await this.getClientToken();
+    await writeSpotifyLocalTracks({
+      spclientEndpoint: this.spclientEndpoint || "gue1-spclient.spotify.com",
+      accessToken,
+      clientToken,
+      appPlatform: SPOTIFY_APP_PLATFORM,
+      appVersion: SPOTIFY_APP_VERSION,
+      userAgent: SPOTIFY_USER_AGENT,
+      username,
+      uris,
+      addedAt: Math.floor(Date.now() / 1000),
+      clientUpdateId: createSpotifyCollectionClientUpdateId(),
+      isRemoved,
+    });
   }
 
   async handleCheckSavedTracks(params: any): Promise<any> {
