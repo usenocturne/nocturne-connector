@@ -56,6 +56,7 @@
 2. Open the disk image and drag Nocturne Connector into your Applications folder.
 3. Open Nocturne Connector from your Applications folder.
 4. Finish setting up Nocturne Connector by following the steps on screen.
+    - If your device is already paired but not appearing on the Connector Dashboard, allow Nocturne Bluetooth permissions through *System Settings* > *Privacy & Security* > *Bluetooth*.
 
 </details>
 
