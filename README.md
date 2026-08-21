@@ -92,6 +92,8 @@ Connector images use an A/B root partition layout. The boot partition runs U-Boo
 
 Full SD-card images are named `nocturne-connector_<version>.img.gz`. Self-update packages are named `nocturne-connector_<version>_update.img.gz` and must be published with the matching `.sha256` file in the GitHub release. The web UI Settings page checks for that rootfs-only asset and flashes it to the inactive slot before prompting for a reboot.
 
+The selector helper writes U-Boot's CRC in big-endian byte order and accepts legacy little-endian records during migration. Existing devices running an older helper need the fixed helper installed once, or a full-image reflash, before a rootfs-only update can switch slots.
+
 Persistent connector state, setup/auth data, analytics queue data, and Wi-Fi config live under `/data` so they survive slot changes.
 
 ## Tinkering (Advanced)

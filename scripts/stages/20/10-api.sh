@@ -31,6 +31,9 @@ cp "$CONNECTOR_PATH"/package.json "$ROOTFS_PATH"/etc/nocturne-connector/api/pack
 cp "$CONNECTOR_PATH"/tsconfig.json "$ROOTFS_PATH"/etc/nocturne-connector/api/tsconfig.json
 
 install -m 755 "$SCRIPTS_PATH"/services/connector-api.sh "$ROOTFS_PATH"/etc/init.d/connector-api
+install -d "$ROOTFS_PATH"/usr/lib/nocturne-connector
+install -m 644 "$SCRIPTS_PATH"/bin/uboot_tool.ts "$ROOTFS_PATH"/usr/lib/nocturne-connector/uboot_tool.ts
+install -m 755 "$SCRIPTS_PATH"/bin/uboot_tool "$ROOTFS_PATH"/usr/sbin/uboot_tool
 install -m 755 "$SCRIPTS_PATH"/services/wifi-import.sh "$ROOTFS_PATH"/etc/init.d/wifi-import
 install -m 755 "$SCRIPTS_PATH"/services/ab-root.sh "$ROOTFS_PATH"/etc/init.d/ab-root
 install -m 755 "$SCRIPTS_PATH"/services/connector-data-grow.sh "$ROOTFS_PATH"/etc/init.d/connector-data-grow

@@ -7,9 +7,8 @@ set -e
 : "${CONNECTOR_IMAGE_VERSION:="v2.1.1"}"
 
 : "${UBOOT_PROJ_ID:="32838267"}"
-: "${UBOOT_TOOL_PROJ_ID:="33098050"}"
 : "${UBOOT_PACKAGE:=""}"
-: "${UBOOT_VERSION:=""}"
+: "${UBOOT_VERSION:="2026.07"}"
 
 : "${ALPINE_BUILD:="3.24"}"
 : "${ALPINE_BUILD_PATCH:="1"}"

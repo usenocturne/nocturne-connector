@@ -6,6 +6,7 @@ run: connector-api
 
 test:
     scripts/services/connector-data-grow.test.sh
+    bun test scripts/bin/uboot_tool.test.ts
     cd src && bun test
 
 lint:

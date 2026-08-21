@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/bin/bun /usr/lib/nocturne-connector/uboot_tool.ts "$@"
