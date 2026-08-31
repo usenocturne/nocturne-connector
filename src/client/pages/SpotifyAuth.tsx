@@ -4,15 +4,29 @@ import { useAutoRefresh } from "../hooks/useWebSocket";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Music, ExternalLink, Loader2 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { useConnectorPlatform } from "../hooks/useConnectorPlatform";
 
 interface SpotifyAuthProps {
   onLinked?: () => void;
+  onSkipped?: () => void;
 }
 
-export function SpotifyAuth({ onLinked }: SpotifyAuthProps = {}) {
+export function SpotifyAuth({ onLinked, onSkipped }: SpotifyAuthProps = {}) {
+  const { isWindows } = useConnectorPlatform();
   const [authState, setAuthState] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [skipConfirmOpen, setSkipConfirmOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -65,6 +79,21 @@ export function SpotifyAuth({ onLinked }: SpotifyAuthProps = {}) {
   const disconnect = async () => {
     await post("/api/spotify/disconnect");
     refresh();
+  };
+
+  const skip = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await post("/api/spotify/skip");
+      setAuthState(data.authState);
+      setSkipConfirmOpen(false);
+      onSkipped?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -140,7 +169,9 @@ export function SpotifyAuth({ onLinked }: SpotifyAuthProps = {}) {
         </Card>
       )}
 
-      {(!authState || authState.status === "idle") && (
+      {(!authState ||
+        authState.status === "idle" ||
+        (!isWindows && authState.status === "skipped")) && (
         <Card>
           <CardContent>
             <div className="flex flex-col items-center py-8 text-center">
@@ -159,12 +190,71 @@ export function SpotifyAuth({ onLinked }: SpotifyAuthProps = {}) {
               >
                 {loading ? "Starting..." : "Link Spotify"}
               </Button>
+              {isWindows && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSkipConfirmOpen(true)}
+                  disabled={loading}
+                  className="mt-3 text-muted"
+                >
+                  Skip for now
+                </Button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {isWindows && authState?.status === "skipped" && (
+        <Card>
+          <CardContent>
+            <div className="flex flex-col items-center py-8 text-center">
+              <div className="mb-4 flex size-14 items-center justify-center rounded-2xl bg-hover">
+                <Music className="size-7 text-muted" />
+              </div>
+              <h3 className="text-lg font-medium text-fg">Spotify is skipped</h3>
+              <p className="mb-6 mt-1.5 max-w-sm text-sm text-secondary">
+                Nocturne shows media playing on this Windows PC. Link Spotify to unlock your library, playlists, and playback on the Car Thing.
+              </p>
+              <Button
+                className="bg-success text-bg hover:bg-success/90"
+                size="lg"
+                onClick={startAuth}
+                disabled={loading}
+              >
+                {loading ? "Starting..." : "Link Spotify"}
+              </Button>
             </div>
           </CardContent>
         </Card>
       )}
 
       {error && <p className="mt-4 text-sm text-destructive">{error}</p>}
+
+      {isWindows && <AlertDialog open={skipConfirmOpen} onOpenChange={setSkipConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Skip Spotify?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Nocturne will only show media playing on this Windows PC. Spotify features like your library and playlists won't be available on the Car Thing. You can link Spotify at any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={loading}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={loading}
+              onClick={(event) => {
+                event.preventDefault();
+                void skip();
+              }}
+            >
+              {loading ? "Skipping..." : "Skip"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>}
     </div>
   );
 }

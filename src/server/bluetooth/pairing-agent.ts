@@ -1,6 +1,7 @@
 import { createLogger } from "../utils/logger";
 
 const log = createLogger("PairingAgent");
+const DBUS_MODULE = ["dbus", "next"].join("-");
 
 export interface PairingPinEvent {
   address: string;
@@ -71,7 +72,7 @@ export class PairingAgent {
 
   async register(): Promise<void> {
     try {
-      const dbus = await import("dbus-next");
+      const dbus = await import(DBUS_MODULE);
       this.dbusModule = dbus;
       this.bus = dbus.systemBus();
 
@@ -79,6 +80,10 @@ export class PairingAgent {
       const agent = this;
 
       class Agent1 extends DbusInterface {
+        constructor() {
+          super("org.bluez.Agent1");
+        }
+
         Release() {
           log.info("Agent released");
         }
@@ -144,7 +149,7 @@ export class PairingAgent {
         },
       });
 
-      const agentInstance = new Agent1("org.bluez.Agent1");
+      const agentInstance = new Agent1();
       this.bus.export(this.agentPath, agentInstance);
 
       const obj = await this.bus.getProxyObject("org.bluez", "/org/bluez");

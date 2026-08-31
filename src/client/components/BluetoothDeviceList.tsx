@@ -17,11 +17,13 @@ export function BluetoothDeviceList({
   onPair,
   onUnpair,
   onConnect,
+  onDisconnect,
 }: {
   devices: Device[];
   onPair: (address: string) => void;
   onUnpair: (address: string) => void;
   onConnect: (address: string) => void;
+  onDisconnect?: (address: string) => void;
 }) {
   return (
     <div className="space-y-2">
@@ -39,7 +41,15 @@ export function BluetoothDeviceList({
               <div className="flex flex-col sm:flex-row justify-center gap-2">
                 {dev.paired ? (
                   <>
-                    {!dev.connected && (
+                    {dev.connected && onDisconnect ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => onDisconnect(dev.address)}
+                      >
+                        Disconnect
+                      </Button>
+                    ) : !dev.connected ? (
                       <Button
                         variant="outline"
                         size="sm"
@@ -47,7 +57,7 @@ export function BluetoothDeviceList({
                       >
                         Connect
                       </Button>
-                    )}
+                    ) : null}
                     <Button
                       variant="destructive"
                       size="sm"

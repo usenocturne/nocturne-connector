@@ -6,6 +6,7 @@ import {
   SPOTIFY_APP_PLATFORM,
   SPOTIFY_APP_VERSION,
   SpotifyOperationHash,
+  SPOTIFY_SKIPPED_PATH,
 } from "../config";
 import { SpotifyDatabaseStorage, type SpotifyDatabaseCredentials } from "./spotify-database";
 import { createLogger } from "../utils/logger";
@@ -15,6 +16,15 @@ import {
   splitSpotifyLibraryTrackReferences,
   writeSpotifyLocalTracks,
 } from "./spotify-collection";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "fs";
+import { dirname } from "path";
 
 const log = createLogger("SpotifyService");
 
@@ -76,6 +86,44 @@ export type SpotifyAuthState =
   | { status: "linked"; displayName: string | null }
   | { status: "skipped" };
 
+export interface SpotifySkipPreferenceStore {
+  load(): boolean;
+  save(skipped: boolean): void;
+}
+
+class FileSpotifySkipPreferenceStore implements SpotifySkipPreferenceStore {
+  constructor(private readonly path = SPOTIFY_SKIPPED_PATH) {}
+
+  load(): boolean {
+    try {
+      if (!existsSync(this.path)) return false;
+      const parsed: unknown = JSON.parse(readFileSync(this.path, "utf8"));
+      return typeof parsed === "object"
+        && parsed !== null
+        && Reflect.get(parsed, "skipped") === true;
+    } catch (error) {
+      log.warn(`Unable to read Spotify skip preference: ${error}`);
+      return false;
+    }
+  }
+
+  save(skipped: boolean): void {
+    mkdirSync(dirname(this.path), { recursive: true });
+    const temporary = `${this.path}.tmp.${process.pid}.${Date.now()}`;
+    try {
+      writeFileSync(temporary, JSON.stringify({ skipped }), { mode: 0o600 });
+      renameSync(temporary, this.path);
+    } catch (error) {
+      try {
+        unlinkSync(temporary);
+      } catch (cleanupError) {
+        log.debug(`Unable to remove temporary Spotify preference: ${cleanupError}`);
+      }
+      throw error;
+    }
+  }
+}
+
 export interface SpotifyTrackInfo {
   uri: string;
   id: string;
@@ -100,8 +148,10 @@ interface CachedCredentials {
 export class SpotifyService {
   private static TOKEN_REFRESH_INTERVAL = 30 * 60 * 1000; // 30 minutes
 
-  authState: SpotifyAuthState = { status: "idle" };
+  authState: SpotifyAuthState;
   private dbStorage: SpotifyDatabaseStorage;
+  private readonly skipPreferenceStore: SpotifySkipPreferenceStore;
+  private readonly skipSupported: boolean;
 
   private cachedCredentials: CachedCredentials | null = null;
   private clientToken: string | null = null;
@@ -122,10 +172,26 @@ export class SpotifyService {
 
   constructor(
     dbStorage: SpotifyDatabaseStorage,
-    getUserID: () => string | null
+    getUserID: () => string | null,
+    skipPreferenceStore: SpotifySkipPreferenceStore =
+      new FileSpotifySkipPreferenceStore(),
+    skipSupported = process.platform === "win32",
   ) {
     this.dbStorage = dbStorage;
     this.getUserID = getUserID;
+    this.skipPreferenceStore = skipPreferenceStore;
+    this.skipSupported = skipSupported;
+    this.authState = skipSupported && skipPreferenceStore.load()
+      ? { status: "skipped" }
+      : { status: "idle" };
+  }
+
+  get isSpotifySkipSupported(): boolean {
+    return this.skipSupported;
+  }
+
+  get isSpotifySkipped(): boolean {
+    return this.skipSupported && this.skipPreferenceStore.load();
   }
 
   onAuthStateChange(callback: (state: SpotifyAuthState) => void): void {
@@ -140,6 +206,25 @@ export class SpotifyService {
       this.stopTokenRefreshTimer();
     }
     for (const cb of this.authStateCallbacks) cb(state);
+  }
+
+  skipSpotifyAuth(): void {
+    if (!this.skipSupported) {
+      throw new Error("Skipping Spotify is not supported on this platform");
+    }
+    this.stopPolling();
+    this.cancelAuthCheckRetry();
+    this.skipPreferenceStore.save(true);
+    this.setAuthState({ status: "skipped" });
+  }
+
+  private resetSkippedState(): void {
+    if (!this.skipSupported) return;
+    this.skipPreferenceStore.save(false);
+  }
+
+  private unlinkedAuthState(): SpotifyAuthState {
+    return this.isSpotifySkipped ? { status: "skipped" } : { status: "idle" };
   }
 
   private startTokenRefreshTimer(): void {
@@ -206,10 +291,16 @@ export class SpotifyService {
       this.authCheckRetryTimer = null;
     }
 
+    if (this.isSpotifySkipped) {
+      this.authCheckAttempts = 0;
+      this.setAuthState({ status: "skipped" });
+      return;
+    }
+
     const userID = this.getUserID();
     if (!userID) {
       this.authCheckAttempts = 0;
-      this.setAuthState({ status: "idle" });
+      this.setAuthState(this.unlinkedAuthState());
       return;
     }
 
@@ -235,12 +326,13 @@ export class SpotifyService {
 
       const displayName = await this.getSpotifyDisplayName();
       this.authCheckAttempts = 0;
+      this.resetSkippedState();
       this.setAuthState({ status: "linked", displayName });
     } catch (err: any) {
       const msg = err?.message ?? String(err);
       if (msg.includes("No credentials found")) {
         this.authCheckAttempts = 0;
-        this.setAuthState({ status: "idle" });
+        this.setAuthState(this.unlinkedAuthState());
         return;
       }
       if (
@@ -256,7 +348,7 @@ export class SpotifyService {
           log.warn(`Failed to delete credentials: ${delErr}`);
         }
         this.cachedCredentials = null;
-        this.setAuthState({ status: "idle" });
+        this.setAuthState(this.unlinkedAuthState());
         return;
       }
       if (err instanceof NotAuthenticatedError) {
@@ -350,7 +442,7 @@ export class SpotifyService {
     if (data.error === "slow_down") return;
     if (data.error === "expired_token") {
       this.stopPolling();
-      this.setAuthState({ status: "idle" });
+      this.setAuthState(this.unlinkedAuthState());
       return;
     }
     if (data.error) {
@@ -383,13 +475,14 @@ export class SpotifyService {
     );
 
     const displayName = await this.getSpotifyDisplayName();
+    this.resetSkippedState();
     this.setAuthState({ status: "linked", displayName });
   }
 
   cancelAuthorization(): void {
     this.stopPolling();
     this.cancelAuthCheckRetry();
-    this.setAuthState({ status: "idle" });
+    this.setAuthState(this.unlinkedAuthState());
   }
 
   async disconnect(): Promise<void> {
@@ -406,7 +499,7 @@ export class SpotifyService {
     }
     this.cachedCredentials = null;
     this._spotifyUserId = null;
-    this.setAuthState({ status: "idle" });
+    this.setAuthState(this.unlinkedAuthState());
   }
 
   private cancelAuthCheckRetry(): void {

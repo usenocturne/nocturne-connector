@@ -1,16 +1,10 @@
 import { createLogger } from "../utils/logger";
+import type { BluetoothDevice } from "./types";
+
+export type { BluetoothDevice } from "./types";
 
 const log = createLogger("BlueZAdapter");
-
-export interface BluetoothDevice {
-  address: string;
-  name: string;
-  paired: boolean;
-  connected: boolean;
-  trusted: boolean;
-  rssi: number;
-  icon: string;
-}
+const DBUS_MODULE = ["dbus", "next"].join("-");
 
 const ADDRESS_RE = /^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/;
 
@@ -54,7 +48,7 @@ export class BlueZAdapter {
 
   async initialize(): Promise<void> {
     try {
-      const dbus = await import("dbus-next");
+      const dbus = await import(DBUS_MODULE);
       this.dbus = dbus;
       this.bus = dbus.systemBus();
       const obj = await this.bus.getProxyObject("org.bluez", this.adapterPath);

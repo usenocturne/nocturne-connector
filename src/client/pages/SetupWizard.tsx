@@ -4,6 +4,7 @@ import { useAuth } from "../hooks/useAuth";
 import { useEvent } from "../hooks/useWebSocket";
 import { NocturneAuth } from "./NocturneAuth";
 import { SpotifyAuth } from "./SpotifyAuth";
+import { useConnectorPlatform } from "../hooks/useConnectorPlatform";
 import { BluetoothPairing } from "./BluetoothPairing";
 import { AnalyticsConsent } from "./AnalyticsConsent";
 import { Card, CardContent } from "@/components/ui/card";
@@ -19,9 +20,11 @@ export function SetupWizard() {
   const [step, setStep] = useState(0);
   const navigate = useNavigate();
   const { authenticated, refresh } = useAuth();
+  const { isWindows } = useConnectorPlatform();
   const [finishing, setFinishing] = useState(false);
   const [finishError, setFinishError] = useState<string | null>(null);
-  const [spotifyLinked, setSpotifyLinked] = useState(false);
+  const [spotifyReady, setSpotifyReady] = useState(false);
+  const hostLabel = isWindows ? "Windows PC" : "Raspberry Pi";
 
   const next = () => {
     if (step < steps.length - 1) setStep(step + 1);
@@ -47,19 +50,21 @@ export function SetupWizard() {
 
   useEffect(() => {
     get("/api/spotify/status")
-      .then((data) => setSpotifyLinked(data?.authState?.status === "linked"))
+      .then((data) =>
+        setSpotifyReady(isSpotifySetupComplete(data?.authState?.status, isWindows))
+      )
       .catch(() => { });
-  }, []);
+  }, [isWindows]);
 
   useEvent<{ status?: string }>(
     "spotify.auth.status",
     useCallback((state) => {
-      setSpotifyLinked(state?.status === "linked");
-    }, []),
+      setSpotifyReady(isSpotifySetupComplete(state?.status, isWindows));
+    }, [isWindows]),
   );
 
   const nextDisabled =
-    (step === 1 && !authenticated) || (step === 2 && !spotifyLinked);
+    (step === 1 && !authenticated) || (step === 2 && !spotifyReady);
 
   const prevAuthRef = useRef(authenticated);
   useEffect(() => {
@@ -118,7 +123,7 @@ export function SetupWizard() {
                   Welcome to Nocturne
                 </h1>
                 <p className="mb-8 text-secondary">
-                  Let's set up your Raspberry Pi to connect with your Car Thing.
+                  Let's set up your {hostLabel} to connect with your Car Thing.
                 </p>
                 <Button size="lg" onClick={next} className="w-full sm:w-auto">
                   Get Started
@@ -128,7 +133,12 @@ export function SetupWizard() {
           )}
 
           {step === 1 && <NocturneAuth />}
-          {step === 2 && <SpotifyAuth onLinked={() => setStep(3)} />}
+          {step === 2 && (
+            <SpotifyAuth
+              onLinked={() => setStep(3)}
+              onSkipped={isWindows ? () => setStep(3) : undefined}
+            />
+          )}
           {step === 3 && <BluetoothPairing />}
           {step === 4 && <AnalyticsConsent />}
 
@@ -172,4 +182,11 @@ export function SetupWizard() {
       </div>
     </div>
   );
+}
+
+export function isSpotifySetupComplete(
+  status: unknown,
+  allowSkipped = false,
+): boolean {
+  return status === "linked" || (allowSkipped && status === "skipped");
 }

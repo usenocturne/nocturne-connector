@@ -13,7 +13,9 @@ export function getConnectorVersion(): string {
     }
   } catch {}
 
-  const fromEnv = process.env.npm_package_version;
+  const fromEnv = process.platform === "win32"
+    ? process.env.NOCTURNE_CONNECTOR_VERSION ?? process.env.npm_package_version
+    : process.env.npm_package_version;
   if (typeof fromEnv === "string" && fromEnv.length > 0) {
     cachedVersion = fromEnv;
     return fromEnv;

@@ -27,7 +27,11 @@ export function createOtaRoutes(otaService: OTAService) {
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        const status = message.includes("already in progress") ? 409 : 400;
+        const status = message.includes("already in progress")
+          ? 409
+          : message.includes("not supported")
+            ? 501
+            : 400;
         return errorResponse(set, status, message);
       }
     });

@@ -16,6 +16,7 @@ import {
   AlertDialogAction,
   AlertDialogCancel,
 } from "@/components/ui/alert-dialog";
+import { useConnectorPlatform } from "../hooks/useConnectorPlatform";
 
 const BT_EVENTS = [
   "bluetooth.deviceConnected",
@@ -24,6 +25,9 @@ const BT_EVENTS = [
   "bluetooth.deviceFound",
   "bluetooth.deviceUpdated",
 ];
+const WINDOWS_BT_EVENTS = [...BT_EVENTS, "bluetooth.adapterStatus"];
+const WINDOWS_SCAN_DURATION_MS = 30_000;
+const SCAN_REFRESH_MS = 2_000;
 
 interface PairingPinEvent {
   address: string;
@@ -33,6 +37,7 @@ interface PairingPinEvent {
 }
 
 export function BluetoothPairing() {
+  const { isWindows } = useConnectorPlatform();
   const [status, setStatus] = useState<any>(null);
   const [devices, setDevices] = useState<any[]>([]);
   const [connections, setConnections] = useState<any[]>([]);
@@ -52,7 +57,7 @@ export function BluetoothPairing() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  useAutoRefresh(BT_EVENTS, refresh);
+  useAutoRefresh(isWindows ? WINDOWS_BT_EVENTS : BT_EVENTS, refresh);
 
   useEvent<PairingPinEvent>("bluetooth.agent", useCallback((data) => {
     if (data.type === "bluetooth_pin") {
@@ -78,20 +83,48 @@ export function BluetoothPairing() {
 
   const startScan = async () => {
     setScanning(true);
+    if (!isWindows) {
+      try {
+        await post("/api/bluetooth/scan");
+        for (let i = 0; i < 30; i++) {
+          if (!mountedRef.current) break;
+          await new Promise((resolve) => setTimeout(resolve, SCAN_REFRESH_MS));
+          if (!mountedRef.current) break;
+          try {
+            setDevices((await get("/api/bluetooth/devices")).devices ?? []);
+          } catch {}
+        }
+        await post("/api/bluetooth/stop-scan");
+        if (mountedRef.current) await refresh();
+      } catch {}
+      if (mountedRef.current) setScanning(false);
+      return;
+    }
+
     try {
       await post("/api/bluetooth/scan");
-      for (let i = 0; i < 30; i++) {
+      const refreshCount = Math.ceil(
+        WINDOWS_SCAN_DURATION_MS / SCAN_REFRESH_MS,
+      );
+      for (let i = 0; i < refreshCount; i++) {
         if (!mountedRef.current) break;
-        await new Promise((r) => setTimeout(r, 2000));
+        await new Promise((r) => setTimeout(r, SCAN_REFRESH_MS));
         if (!mountedRef.current) break;
         try {
           setDevices((await get("/api/bluetooth/devices")).devices ?? []);
         } catch {}
       }
-      await post("/api/bluetooth/stop-scan");
+    } catch (error) {
+      console.error("Bluetooth scan failed:", error);
+    } finally {
+      try {
+        await post("/api/bluetooth/stop-scan");
+      } catch (error) {
+        console.error("Unable to stop Bluetooth scan:", error);
+      }
       if (mountedRef.current) await refresh();
-    } catch {}
-    if (mountedRef.current) setScanning(false);
+      if (mountedRef.current) setScanning(false);
+    }
   };
 
   return (
@@ -132,7 +165,9 @@ export function BluetoothPairing() {
                     <div className="flex size-9 items-center justify-center rounded-lg bg-success/10">
                       <BluetoothIcon className="size-4 text-success" />
                     </div>
-                    <span className="font-medium text-fg">{conn.name || "Device"}</span>
+                    <span className="font-medium text-fg">
+                      {conn.name || (isWindows ? "Unknown Device" : "Device")}
+                    </span>
                     <Badge variant="success" className="ml-auto">Connected</Badge>
                   </div>
                 </CardContent>
@@ -151,6 +186,12 @@ export function BluetoothPairing() {
           onPair={async (addr) => { await post(`/api/bluetooth/pair/${addr}`); await post(`/api/bluetooth/trust/${addr}`).catch(() => {}); refresh(); }}
           onUnpair={async (addr) => { await post(`/api/bluetooth/unpair/${addr}`); refresh(); }}
           onConnect={async (addr) => { await post(`/api/bluetooth/connect/${addr}`); refresh(); }}
+          onDisconnect={isWindows
+            ? async (addr) => {
+                await post(`/api/bluetooth/disconnect/${addr}`);
+                refresh();
+              }
+            : undefined}
         />
       </div>
 

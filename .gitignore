@@ -5,3 +5,5 @@
 /stages/
 mkcert
 .DS_Store
+/windows/drivers
+/windows/bundles

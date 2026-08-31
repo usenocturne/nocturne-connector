@@ -47,13 +47,19 @@ interface SavedSession {
   refresh_token: string;
 }
 
+export interface SessionProtector {
+  protect(value: string): Promise<string>;
+  unprotect(value: string): Promise<string>;
+}
+
 export interface AuthServiceDependencies {
   authClient?: AuthClient;
   supabaseClient?: SupabaseClient;
   baseFetch?: typeof globalThis.fetch;
   sessionPath?: string;
   restoreRetryBaseDelayMs?: number;
-  persistSessionFile?: (path: string, data: string) => void;
+  persistSessionFile?: (path: string, data: string) => void | Promise<void>;
+  sessionProtector?: SessionProtector;
 }
 
 export function writeSessionFileAtomically(path: string, data: string): void {
@@ -64,7 +70,7 @@ export function writeSessionFileAtomically(path: string, data: string): void {
   try {
     writeFileSync(temporaryPath, data, { mode: 0o600 });
     renameSync(temporaryPath, path);
-    chmodSync(path, 0o600);
+    if (process.platform !== "win32") chmodSync(path, 0o600);
   } catch (err) {
     if (existsSync(temporaryPath)) {
       try {
@@ -157,7 +163,8 @@ export class AuthService {
   private authClient: AuthClient;
   private sessionPath: string;
   private restoreRetryBaseDelayMs: number;
-  private persistSessionFile: (path: string, data: string) => void;
+  private persistSessionFile: (path: string, data: string) => void | Promise<void>;
+  private sessionProtector: SessionProtector | null;
   private _currentUser: User | null = null;
   private _session: Session | null = null;
   private _isInitializing = true;
@@ -194,6 +201,7 @@ export class AuthService {
     this.sessionPath = dependencies.sessionPath ?? AUTH_SESSION_PATH;
     this.restoreRetryBaseDelayMs = dependencies.restoreRetryBaseDelayMs ?? 5_000;
     this.persistSessionFile = dependencies.persistSessionFile ?? writeSessionFileAtomically;
+    this.sessionProtector = dependencies.sessionProtector ?? null;
     this.setupAuthStateListener();
   }
 
@@ -243,10 +251,10 @@ export class AuthService {
           this.cancelRestoreRetry();
           this._session = session;
           this._currentUser = session.user;
-          this.persistSession(true);
+          void this.persistSession(true);
         } else if (event === "SIGNED_OUT") {
           if (recoveryWasActive) return;
-          this.recoverUnexpectedSignOut();
+          void this.recoverUnexpectedSignOut();
         }
       }, 0);
     });
@@ -267,7 +275,7 @@ export class AuthService {
   }
 
   private async restoreSession(): Promise<void> {
-    const saved = this.readPersistedSession();
+    const saved = await this.readPersistedSession();
     if (!saved) {
       this._isInitializing = false;
       this.notifyStateChange();
@@ -278,12 +286,25 @@ export class AuthService {
     await this.attemptRestore(saved, 0, generation, "initial");
   }
 
-  private readPersistedSession(): SavedSession | null {
+  private async readPersistedSession(): Promise<SavedSession | null> {
     if (!existsSync(this.sessionPath)) return null;
 
     try {
       const raw = readFileSync(this.sessionPath, "utf-8");
-      const saved = JSON.parse(raw) as Partial<SavedSession>;
+      const parsed = JSON.parse(raw) as Partial<SavedSession> & {
+        protected_data?: unknown;
+      };
+      let saved: Partial<SavedSession>;
+      if (typeof parsed.protected_data === "string") {
+        if (!this.sessionProtector) {
+          log.warn("Persisted session is protected but no session protector is available");
+          return null;
+        }
+        const decrypted = await this.sessionProtector.unprotect(parsed.protected_data);
+        saved = JSON.parse(decrypted) as Partial<SavedSession>;
+      } else {
+        saved = parsed;
+      }
       if (!saved.access_token || !saved.refresh_token) {
         log.warn("Persisted session is missing tokens; ignoring");
         return null;
@@ -295,18 +316,19 @@ export class AuthService {
     }
   }
 
-  private recoverUnexpectedSignOut(): void {
+  private async recoverUnexpectedSignOut(): Promise<void> {
     if (this.runtimeRecoveryActive || this.restoreCancelled) return;
 
-    const saved = this.readPersistedSession();
+    this.runtimeRecoveryActive = true;
+    const saved = await this.readPersistedSession();
     if (!saved) {
+      this.runtimeRecoveryActive = false;
       log.warn("Supabase signed out unexpectedly and no persisted session is available");
       this.clearAuthenticatedState();
       return;
     }
 
     log.warn("Supabase signed out unexpectedly; retaining local identity while restoring the session");
-    this.runtimeRecoveryActive = true;
     this._session = null;
     const generation = ++this.restoreGeneration;
     void this.attemptRestore(saved, 0, generation, "runtime");
@@ -332,7 +354,7 @@ export class AuthService {
         this._session = sessionData.session;
         this._currentUser = sessionData.session.user;
         this.runtimeRecoveryActive = false;
-        this.persistSession(true);
+        await this.persistSession(true);
         const suffix = attempt > 0 ? ` (after ${attempt} retries)` : "";
         log.info(`Restored session for user: ${this._currentUser.id}${suffix}`);
         this._isInitializing = false;
@@ -414,16 +436,20 @@ export class AuthService {
     }
   }
 
-  private persistSession(retryOnFailure: boolean): boolean {
+  private async persistSession(retryOnFailure: boolean): Promise<boolean> {
     if (!this._session) return false;
     try {
-      this.persistSessionFile(
-        this.sessionPath,
-        JSON.stringify({
-          access_token: this._session.access_token,
-          refresh_token: this._session.refresh_token,
-        })
-      );
+      const session = JSON.stringify({
+        access_token: this._session.access_token,
+        refresh_token: this._session.refresh_token,
+      });
+      const data = this.sessionProtector
+        ? JSON.stringify({
+            version: 1,
+            protected_data: await this.sessionProtector.protect(session),
+          })
+        : session;
+      await this.persistSessionFile(this.sessionPath, data);
       this.cancelPersistRetry();
       return true;
     } catch (err) {
@@ -442,7 +468,7 @@ export class AuthService {
     this.persistRetryAttempt++;
     this.persistRetryTimer = setTimeout(() => {
       this.persistRetryTimer = null;
-      this.persistSession(true);
+      void this.persistSession(true);
     }, delayMs);
   }
 
@@ -479,7 +505,7 @@ export class AuthService {
     this._currentUser = data.session?.user ?? null;
     this._isInitializing = false;
     if (this._session) {
-      if (!this.persistSession(false)) {
+      if (!(await this.persistSession(false))) {
         await this.signOut();
         return { user: null, error: "Unable to persist the connector session" };
       }

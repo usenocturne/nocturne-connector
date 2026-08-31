@@ -2,7 +2,7 @@ import { Elysia } from "elysia";
 import type { SpotifyService } from "../services/spotify-service";
 
 export function createSpotifyRoutes(spotify: SpotifyService) {
-  return new Elysia({ prefix: "/api/spotify" })
+  const routes = new Elysia({ prefix: "/api/spotify" })
     .get("/status", () => {
       return { authState: spotify.authState };
     })
@@ -18,4 +18,10 @@ export function createSpotifyRoutes(spotify: SpotifyService) {
       await spotify.disconnect();
       return { success: true };
     });
+
+  if (!spotify.isSpotifySkipSupported) return routes;
+  return routes.post("/skip", () => {
+    spotify.skipSpotifyAuth();
+    return { success: true, authState: spotify.authState };
+  });
 }

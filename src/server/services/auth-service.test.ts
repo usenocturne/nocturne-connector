@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { AuthChangeEvent, Session, User } from "@supabase/supabase-js";
-import { AuthService } from "./auth-service";
+import { AuthService, type SessionProtector } from "./auth-service";
 
 interface FakeAuthError {
   message: string;
@@ -82,6 +82,16 @@ class FakeAuthClient {
 
   emit(event: AuthChangeEvent, session: Session | null): void {
     this.listener?.(event, session);
+  }
+}
+
+class FakeSessionProtector implements SessionProtector {
+  async protect(value: string): Promise<string> {
+    return Buffer.from(value, "utf8").toString("base64");
+  }
+
+  async unprotect(value: string): Promise<string> {
+    return Buffer.from(value, "base64").toString("utf8");
   }
 }
 
@@ -210,6 +220,39 @@ describe("AuthService", () => {
     await waitFor(() => JSON.parse(readFileSync(path, "utf-8")).refresh_token === "refresh-2");
     expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(readdirSync(join(path, "..")).filter((name) => name.startsWith("auth-session.json.tmp."))).toEqual([]);
+  });
+
+  test("stores and restores protected sessions through the platform protector", async () => {
+    const path = await sessionPath();
+    const authClient = new FakeAuthClient();
+    const protector = new FakeSessionProtector();
+    const service = new AuthService({
+      authClient,
+      sessionPath: path,
+      sessionProtector: protector,
+    });
+    services.push(service);
+    authClient.sessionResults.push(success(session("access-1", "refresh-1")));
+
+    await service.setSessionFromTokens("pair-access", "pair-refresh");
+    const persisted = JSON.parse(readFileSync(path, "utf8"));
+    expect(typeof persisted.protected_data).toBe("string");
+    expect(persisted.access_token).toBeUndefined();
+
+    service.destroy();
+    const restoredClient = new FakeAuthClient();
+    const restored = new AuthService({
+      authClient: restoredClient,
+      sessionPath: path,
+      sessionProtector: protector,
+    });
+    services.push(restored);
+    restoredClient.sessionResults.push(success(session("access-2", "refresh-2")));
+    await restored.initialize();
+    expect(restoredClient.setSessionCalls[0]).toEqual({
+      access_token: "access-1",
+      refresh_token: "refresh-1",
+    });
   });
 
   test("retains identity and retries after an unexpected runtime sign-out", async () => {

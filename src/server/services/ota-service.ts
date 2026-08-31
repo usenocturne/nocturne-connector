@@ -15,7 +15,12 @@ import {
 import { Transform } from "stream";
 import { pipeline } from "stream/promises";
 import { createGunzip } from "zlib";
-import { CONNECTOR_RELEASES_API_URL, OTA_SERVER_URL } from "../config";
+import {
+  CONNECTOR_RELEASES_API_URL,
+  CONNECTOR_TEMP_DIR,
+  OTA_SERVER_URL,
+} from "../config";
+import { join } from "path";
 import { runShell } from "../utils/shell";
 import { createLogger } from "../utils/logger";
 import { getConnectorVersion } from "../utils/version";
@@ -100,7 +105,9 @@ interface BootInfo {
   supported: boolean;
 }
 
-function connectorStatusDefaults(): ConnectorUpdateStatus {
+function connectorStatusDefaults(
+  connectorSelfUpdatesEnabled: boolean,
+): ConnectorUpdateStatus {
   const boot = readBootInfo();
   return {
     inProgress: false,
@@ -109,7 +116,7 @@ function connectorStatusDefaults(): ConnectorUpdateStatus {
     targetVersion: null,
     activeSlot: boot.activeSlot,
     inactiveSlot: boot.inactiveSlot,
-    supported: boot.supported,
+    supported: connectorSelfUpdatesEnabled && boot.supported,
     rebootRequired: false,
     updateAvailable: null,
     availableVersion: null,
@@ -210,10 +217,39 @@ async function sha256File(filePath: string): Promise<string> {
   return hash.digest("hex");
 }
 
+export interface OTAServiceOptions {
+  platform?: NodeJS.Platform;
+  connectorSelfUpdatesEnabled?: boolean;
+  legacyOtaDirectory?: string;
+  connectorOtaDirectory?: string;
+}
+
 export class OTAService {
-  private connectorStatus: ConnectorUpdateStatus = connectorStatusDefaults();
+  private connectorStatus: ConnectorUpdateStatus;
   private connectorStatusListener: ConnectorStatusListener | null = null;
   private lastConnectorCheck: ConnectorUpdateCheckResponse | null = null;
+  private readonly connectorSelfUpdatesEnabled: boolean;
+  private readonly legacyOtaDirectory: string;
+  private readonly connectorOtaDirectory: string;
+
+  constructor(options: OTAServiceOptions = {}) {
+    const platform = options.platform ?? process.platform;
+    this.connectorSelfUpdatesEnabled =
+      options.connectorSelfUpdatesEnabled ?? platform !== "win32";
+    this.legacyOtaDirectory =
+      options.legacyOtaDirectory ??
+      (platform === "win32"
+        ? join(CONNECTOR_TEMP_DIR, "legacy-ota")
+        : "/tmp/nocturne-ota");
+    this.connectorOtaDirectory =
+      options.connectorOtaDirectory ??
+      (platform === "win32"
+        ? join(CONNECTOR_TEMP_DIR, "self-update")
+        : "/tmp/nocturne-connector-ota");
+    this.connectorStatus = connectorStatusDefaults(
+      this.connectorSelfUpdatesEnabled,
+    );
+  }
 
   setConnectorStatusListener(listener: ConnectorStatusListener | null): void {
     this.connectorStatusListener = listener;
@@ -251,10 +287,10 @@ export class OTAService {
     if (!res.ok) throw new Error(`Download failed: ${res.status}`);
 
     const buf = await res.arrayBuffer();
-    const dir = "/tmp/nocturne-ota";
+    const dir = this.legacyOtaDirectory;
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
-    const filePath = `${dir}/nocturne-update.swu`;
+    const filePath = join(dir, "nocturne-update.swu");
     writeFileSync(filePath, Buffer.from(buf));
     log.info(`Downloaded ${buf.byteLength} bytes to ${filePath}`);
 
@@ -292,11 +328,36 @@ export class OTAService {
       currentVersion: getConnectorVersion(),
       activeSlot: boot.activeSlot,
       inactiveSlot: boot.inactiveSlot,
-      supported: boot.supported,
+      supported: this.connectorSelfUpdatesEnabled && boot.supported,
     };
   }
 
   async checkConnectorUpdate(channel = "stable"): Promise<ConnectorUpdateCheckResponse> {
+    if (!this.connectorSelfUpdatesEnabled) {
+      const result: ConnectorUpdateCheckResponse = {
+        updateAvailable: false,
+        currentVersion: getConnectorVersion(),
+        version: null,
+        channel,
+        releaseUrl: null,
+        imageUrl: null,
+        checksumUrl: null,
+        sha256: null,
+        size: null,
+        publishedAt: null,
+        message: "Connector self-updates are not supported on Windows.",
+      };
+      this.lastConnectorCheck = result;
+      this.updateConnectorStatus({
+        stage: "idle",
+        updateAvailable: false,
+        availableVersion: null,
+        targetVersion: null,
+        error: null,
+      });
+      return result;
+    }
+
     this.updateConnectorStatus({
       stage: "checking",
       error: null,
@@ -394,6 +455,9 @@ export class OTAService {
     channel?: string;
     targetVersion?: string;
   }): Promise<ConnectorUpdateStatus> {
+    if (!this.connectorSelfUpdatesEnabled) {
+      throw new Error("Connector self-updates are not supported on Windows");
+    }
     if (this.connectorStatus.inProgress) {
       throw new Error("Connector update already in progress");
     }
@@ -431,9 +495,9 @@ export class OTAService {
       throw new Error("Connector A/B boot is not available on this system");
     }
 
-    const dir = "/tmp/nocturne-connector-ota";
+    const dir = this.connectorOtaDirectory;
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const filePath = `${dir}/nocturne-connector-update.img.gz`;
+    const filePath = join(dir, "nocturne-connector-update.img.gz");
 
     this.updateConnectorStatus({
       inProgress: true,
@@ -627,7 +691,7 @@ export class OTAService {
       currentVersion: patch.currentVersion ?? getConnectorVersion(),
       activeSlot: boot.activeSlot,
       inactiveSlot: boot.inactiveSlot,
-      supported: boot.supported,
+      supported: this.connectorSelfUpdatesEnabled && boot.supported,
       updatedAt: new Date().toISOString(),
     };
     this.connectorStatusListener?.(this.connectorStatus);

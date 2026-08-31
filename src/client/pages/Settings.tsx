@@ -20,6 +20,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { useConnectorPlatform } from "../hooks/useConnectorPlatform";
 
 type OtaStage =
   | "idle"
@@ -55,6 +56,13 @@ interface ConnectorOtaCheck {
   channel: string;
   size: number | null;
   message?: string;
+}
+
+interface SystemMediaStatus {
+  supported: boolean;
+  enabled: boolean;
+  forced: boolean;
+  active: boolean;
 }
 
 function formatBytes(bytes: number | null | undefined): string {
@@ -100,12 +108,15 @@ function stageLabel(stage: OtaStage): string {
 
 export function Settings() {
   const { user, signOut, refresh } = useAuth();
+  const { isWindows } = useConnectorPlatform();
   const [info, setInfo] = useState<any>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [analyticsEnabled, setAnalyticsEnabled] = useState<boolean | null>(null);
   const [analyticsBusy, setAnalyticsBusy] = useState(false);
+  const [systemMedia, setSystemMedia] = useState<SystemMediaStatus | null>(null);
+  const [systemMediaBusy, setSystemMediaBusy] = useState(false);
   const [otaStatus, setOtaStatus] = useState<ConnectorOtaStatus | null>(null);
   const [otaCheck, setOtaCheck] = useState<ConnectorOtaCheck | null>(null);
   const [otaBusy, setOtaBusy] = useState<"check" | "start" | null>(null);
@@ -121,11 +132,25 @@ export function Settings() {
       .catch(() => { });
   }, []);
 
+  const refreshSystemMedia = useCallback(() => {
+    if (!isWindows) return;
+    get<SystemMediaStatus>("/api/media/status")
+      .then(setSystemMedia)
+      .catch(() => { });
+  }, [isWindows]);
+
   useEffect(() => {
+    refreshSystemMedia();
+  }, [refreshSystemMedia]);
+
+  useEvent("spotify.auth.status", refreshSystemMedia);
+
+  useEffect(() => {
+    if (isWindows) return;
     get<ConnectorOtaStatus>("/api/ota/connector/status")
       .then(setOtaStatus)
       .catch(() => { });
-  }, []);
+  }, [isWindows]);
 
   useEvent(
     "connector.ota.status",
@@ -165,6 +190,20 @@ export function Settings() {
       if (prev !== null) setAnalyticsEnabled(prev);
     } finally {
       setAnalyticsBusy(false);
+    }
+  };
+
+  const handleSystemMediaToggle = async (checked: boolean) => {
+    if (systemMediaBusy || systemMedia?.forced) return;
+    const previous = systemMedia;
+    setSystemMedia((current) => current ? { ...current, enabled: checked, active: checked } : current);
+    setSystemMediaBusy(true);
+    try {
+      setSystemMedia(await post<SystemMediaStatus>("/api/media/enabled", { enabled: checked }));
+    } catch {
+      setSystemMedia(previous);
+    } finally {
+      setSystemMediaBusy(false);
     }
   };
 
@@ -276,7 +315,34 @@ export function Settings() {
           </Card>
         </section>
 
-        <section>
+        {isWindows && <section>
+          <h3 className="mb-4 text-xs font-medium uppercase tracking-widest text-muted">
+            Media
+          </h3>
+          <Card>
+            <CardContent>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p className="font-medium text-fg">System media</p>
+                  <p className="mt-0.5 text-sm text-secondary">
+                    {systemMedia?.forced
+                      ? "Always on while Spotify is skipped, so Nocturne can still show what's playing."
+                      : "Show media playing on this Windows PC from any app on Nocturne. Turn off to use Spotify only."}
+                  </p>
+                </div>
+                <Switch
+                  checked={systemMedia?.forced || systemMedia?.enabled || false}
+                  onCheckedChange={handleSystemMediaToggle}
+                  disabled={!systemMedia?.supported || systemMediaBusy || systemMedia?.forced === true}
+                  aria-label="Toggle system media"
+                  className="shrink-0"
+                />
+              </div>
+            </CardContent>
+          </Card>
+        </section>}
+
+        {!isWindows && <section>
           <h3 className="mb-4 text-xs font-medium uppercase tracking-widest text-muted">
             Updates
           </h3>
@@ -364,7 +430,7 @@ export function Settings() {
               )}
             </CardContent>
           </Card>
-        </section>
+        </section>}
 
         <section>
           <h3 className="mb-4 text-xs font-medium uppercase tracking-widest text-muted">
@@ -397,6 +463,7 @@ export function Settings() {
           </h3>
           <Card className="border-destructive/20">
             <CardContent className="space-y-4">
+              {!isWindows && <>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="font-medium text-fg">Reboot Device</p>
@@ -429,6 +496,7 @@ export function Settings() {
               </div>
 
               <div className="border-t border-line" />
+              </>}
 
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>

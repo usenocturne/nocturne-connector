@@ -1,4 +1,6 @@
 import { existsSync } from "fs";
+import { homedir, tmpdir } from "os";
+import { join, win32 } from "path";
 
 export const SUPABASE_URL = "https://sb.usenocturne.com";
 export const SUPABASE_ANON_KEY = "sb_publishable_8Sce2-p3DlCRTpOc7WXCuH_PXVQbLoR";
@@ -6,19 +8,71 @@ export const SUPABASE_ANON_KEY = "sb_publishable_8Sce2-p3DlCRTpOc7WXCuH_PXVQbLoR
 export const SPOTIFY_CLIENT_ID = "65b708073fc0480ea92a077233ca87bd";
 export const WEB_PLAYER_CLIENT_ID = "d8a5ed958d274c2e8ee717e6a4b0971d";
 
-export const PORT = Number(process.env.PORT) || 80;
+export function defaultConnectorPort(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  if (platform !== "win32") return Number(env.PORT) || 80;
+  const configured = Number(env.PORT);
+  return Number.isInteger(configured) && configured >= 0 && configured <= 65_535
+    ? configured
+    : 0;
+}
+
+export function defaultConnectorBindHost(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (platform !== "win32") return "0.0.0.0";
+  const configured = env.NOCTURNE_CONNECTOR_BIND_HOST;
+  return configured === "localhost" || configured === "127.0.0.1"
+    ? configured
+    : "127.0.0.1";
+}
+
+export const PORT = defaultConnectorPort();
+export const BIND_HOST = defaultConnectorBindHost();
 
 export const OTA_SERVER_URL =
   process.env.NOCTURNE_OTA_SERVER_URL ?? "https://ota.usenocturne.com";
 export const CONNECTOR_RELEASES_API_URL =
   "https://api.github.com/repos/usenocturne/nocturne-connector/releases";
 
-export const CONNECTOR_STATE_DIR =
-  process.env.NOCTURNE_CONNECTOR_STATE_DIR ??
-  (existsSync("/data") ? "/data/nocturne-connector" : "/etc/nocturne-connector");
+export function defaultConnectorStateDir(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  userHome = homedir(),
+): string {
+  if (env.NOCTURNE_CONNECTOR_STATE_DIR) {
+    return env.NOCTURNE_CONNECTOR_STATE_DIR;
+  }
+  if (platform === "win32") {
+    const localAppData = env.LOCALAPPDATA ?? win32.join(userHome, "AppData", "Local");
+    return win32.join(localAppData, "Nocturne", "Connector");
+  }
+  return existsSync("/data")
+    ? "/data/nocturne-connector"
+    : "/etc/nocturne-connector";
+}
+
+export const CONNECTOR_STATE_DIR = defaultConnectorStateDir();
+
+export const CONNECTOR_TEMP_DIR =
+  process.env.NOCTURNE_CONNECTOR_TEMP_DIR ??
+  (process.platform === "win32"
+    ? join(tmpdir(), "Nocturne Connector")
+    : "/tmp/nocturne-connector");
+
+export const HOST_PIPE_PATH = process.env.NOCTURNE_HOST_PIPE ?? null;
+export const HOST_PIPE_TOKEN = process.env.NOCTURNE_HOST_TOKEN ?? null;
+export const CLIENT_DIST_DIR = process.platform === "win32"
+  ? process.env.NOCTURNE_CLIENT_DIST_DIR ?? null
+  : null;
 
 export const AUTH_SESSION_PATH = `${CONNECTOR_STATE_DIR}/auth-session.json`;
 export const SETUP_STATE_PATH = `${CONNECTOR_STATE_DIR}/setup-state.json`;
+export const SYSTEM_MEDIA_ENABLED_PATH = `${CONNECTOR_STATE_DIR}/system-media-enabled.json`;
+export const SPOTIFY_SKIPPED_PATH = `${CONNECTOR_STATE_DIR}/spotify-skipped.json`;
 
 export const SPOTIFY_SCOPES = [
   "app-remote-control",

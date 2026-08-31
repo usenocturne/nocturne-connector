@@ -1,8 +1,11 @@
 import { Elysia } from "elysia";
-import type { BluetoothService } from "../services/bluetooth-service";
+import {
+  bluetoothDisplayName,
+  type BluetoothService,
+} from "../services/bluetooth-service";
 
 export function createBluetoothRoutes(bt: BluetoothService) {
-  return new Elysia({ prefix: "/api/bluetooth" })
+  const routes = new Elysia({ prefix: "/api/bluetooth" })
     .get("/status", async () => bt.getStatus())
     .post("/power", async ({ body }) => {
       const { on } = body as { on: boolean };
@@ -51,13 +54,55 @@ export function createBluetoothRoutes(bt: BluetoothService) {
       bt.rejectPairing();
       return { success: true };
     })
-    .get("/connections", () => {
-      const conns = bt.getConnections();
-      return {
-        connections: Array.from(conns.entries()).map(([path, conn]) => ({
-          devicePath: path,
-          address: conn.address,
-        })),
-      };
+    .get("/connections", () => bluetoothConnectionsResponse(bt));
+
+  if (!bt.usesWindowsRouteSemantics) return routes;
+  return routes.post("/disconnect/:address", async ({ params }) => {
+    await bt.disconnect(params.address);
+    return { success: true };
+  });
+}
+
+export async function bluetoothConnectionsResponse(
+  bt: Pick<
+    BluetoothService,
+    "getConnections" | "getDevices" | "usesWindowsRouteSemantics"
+  >,
+): Promise<{
+  connections: Array<{
+    devicePath: string;
+    address: string;
+    name?: string;
+  }>;
+}> {
+  const conns = bt.getConnections();
+  if (!bt.usesWindowsRouteSemantics) {
+    return {
+      connections: Array.from(conns.entries()).map(([path, connection]) => ({
+        devicePath: path,
+        address: connection.address,
+      })),
+    };
+  }
+  const devices = await bt.getDevices();
+  const names = new Map(
+    devices.map((device) => [device.address.toUpperCase(), device.name]),
+  );
+  const connections = new Map<string, {
+    devicePath: string;
+    address: string;
+    name: string;
+  }>();
+  for (const [devicePath, connection] of conns) {
+    const key = connection.address.toUpperCase();
+    if (connections.has(key)) continue;
+    connections.set(key, {
+      devicePath,
+      address: connection.address,
+      name: bluetoothDisplayName(names.get(key) ?? "", connection.address),
     });
+  }
+  return {
+    connections: Array.from(connections.values()),
+  };
 }

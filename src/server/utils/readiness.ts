@@ -102,7 +102,23 @@ async function sleep(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-export async function waitForClockSync(): Promise<void> {
+export interface ClockSyncWaitOptions {
+  platform?: NodeJS.Platform;
+  probe?: () => Promise<{ synced: boolean; source?: string }>;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export async function waitForClockSync(
+  options: ClockSyncWaitOptions = {},
+): Promise<void> {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "linux") {
+    log.info(`Using ${platform} system clock; Linux clock-sync gate is not required`);
+    return;
+  }
+
+  const probe = options.probe ?? probeClockSync;
+  const wait = options.sleep ?? sleep;
   const start = Date.now();
   let attempt = 0;
   let lastLog = 0;
@@ -112,7 +128,7 @@ export async function waitForClockSync(): Promise<void> {
 
   while (true) {
     attempt++;
-    const { synced, source } = await probeClockSync();
+    const { synced, source } = await probe();
     const now = Date.now();
 
     if (synced) {
@@ -139,6 +155,6 @@ export async function waitForClockSync(): Promise<void> {
       lastLog = now;
     }
 
-    await sleep(POLL_INTERVAL_MS);
+    await wait(POLL_INTERVAL_MS);
   }
 }

@@ -8,6 +8,7 @@ import { SpotifyAuth } from "./pages/SpotifyAuth";
 import { Settings } from "./pages/Settings";
 import { SetupWizard } from "./pages/SetupWizard";
 import { PairConnector } from "./pages/PairConnector";
+import { ConnectorPlatformProvider } from "./hooks/useConnectorPlatform";
 
 function LoadingScreen() {
   return (
@@ -61,9 +62,11 @@ export function App() {
 
   return (
     <AuthContext.Provider value={auth}>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
+      <ConnectorPlatformProvider>
+        <BrowserRouter>
+          <AppRoutes />
+        </BrowserRouter>
+      </ConnectorPlatformProvider>
     </AuthContext.Provider>
   );
 }

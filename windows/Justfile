@@ -1,0 +1,21 @@
+bridge-types:
+    bun scripts/generate-bridge-types.ts
+
+server-build:
+    cd ../src && bun run build
+    bun scripts/build-server.ts
+
+host-check:
+    cargo check --manifest-path Cargo.toml
+
+host-test:
+    cargo test --release --manifest-path Cargo.toml
+
+test:
+    cargo test --release --manifest-path Cargo.toml
+
+windows-check: host-check
+    cd ../src && bun run check
+
+universal-build: server-build
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-universal.ps1

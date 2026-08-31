@@ -1,8 +1,10 @@
 import { createLogger } from "../utils/logger";
 import { RFCOMM_UUID } from "../config";
 import { writeAllAsync } from "./async-fd-writer";
+import { closeSync } from "fs";
 
 const log = createLogger("RFCOMMServer");
+const DBUS_MODULE = ["dbus", "next"].join("-");
 
 export interface RFCOMMConnection {
   devicePath: string;
@@ -44,7 +46,7 @@ export class RFCOMMServer {
 
   async register(): Promise<void> {
     try {
-      const dbus = await import("dbus-next");
+      const dbus = await import(DBUS_MODULE);
       this.bus = dbus.systemBus();
 
       const obj = await this.bus.getProxyObject("org.bluez", "/org/bluez");
@@ -60,6 +62,10 @@ export class RFCOMMServer {
       const server = this;
 
       class Profile1 extends DbusInterface {
+        constructor() {
+          super("org.bluez.Profile1");
+        }
+
         NewConnection(device: string, fd: number, _fdProps: any) {
           log.info(`New RFCOMM connection from ${device}, fd=${fd}`);
           const address = device.split("/").pop()?.replace(/_/g, ":") ?? "";
@@ -94,7 +100,7 @@ export class RFCOMMServer {
         },
       });
 
-      const profile = new Profile1("org.bluez.Profile1");
+      const profile = new Profile1();
       this.bus.export(this.profilePath, profile);
 
       await profileManager.RegisterProfile(this.profilePath, RFCOMM_UUID, options);
@@ -155,6 +161,24 @@ export class RFCOMMServer {
 
   getConnections(): Map<string, RFCOMMConnection> {
     return this.connections;
+  }
+
+  disconnectDevice(address: string): boolean {
+    const normalized = address.toUpperCase();
+    const matches = Array.from(this.connections.entries()).filter(
+      ([, connection]) => connection.address.toUpperCase() === normalized,
+    );
+    for (const [devicePath, connection] of matches) {
+      this.connections.delete(devicePath);
+      this.writeStates.delete(devicePath);
+      try {
+        closeSync(connection.fd);
+      } catch (error) {
+        log.warn(`Failed to close RFCOMM connection ${devicePath}: ${error}`);
+      }
+      this.onDisconnection?.(devicePath);
+    }
+    return matches.length > 0;
   }
 
   async unregister(): Promise<void> {

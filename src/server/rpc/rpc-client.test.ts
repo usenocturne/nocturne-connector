@@ -58,9 +58,11 @@ describe("RPCClient", () => {
     client.cleanup();
   });
 
-  test("sends capable OTA transfer responses as raw checksum envelopes", async () => {
+  test("keeps capable OTA checksum envelopes inside the SPP base64 transport", async () => {
     const socket = new FakeSocket();
-    const client = new RPCClient("test", "base64-newline");
+    const client = new RPCClient("test", "base64-newline", {
+      preserveConnectionWireFormat: true,
+    });
     client.setSocket(socket);
     setTransferDelegate(client);
 
@@ -74,30 +76,46 @@ describe("RPCClient", () => {
 
     const payloads: Buffer[] = [];
     for (const write of socket.writes) {
-      const parsed = parseChunk(write);
+      expect(write.at(-1)).toBe(0x0a);
+      const parsed = parseChunk(Buffer.from(write.toString().trim(), "base64"));
       if (parsed.status !== "success") {
-        throw new Error("expected raw checksum envelope");
+        throw new Error("expected a base64-wrapped checksum envelope");
       }
       payloads.push(parsed.payload);
     }
-    expect(decode(Buffer.concat(payloads))).toMatchObject({
+    const result = decode(Buffer.concat(payloads));
+    expect(result).toMatchObject({
       type: "result",
       id: CALL_ID,
     });
+    if (
+      result.type !== "result" ||
+      typeof result.result !== "object" ||
+      result.result === null
+    ) {
+      throw new Error("expected a result payload");
+    }
+    const binary = Reflect.get(result.result, "data");
+    if (!(binary instanceof Uint8Array)) {
+      throw new Error("expected MessagePack binary transfer data");
+    }
+    expect(Buffer.from(binary)).toEqual(Buffer.alloc(4_000, 7));
 
-    const original = socket.writes[0];
-    if (!original) throw new Error("expected raw checksum envelope");
-    const first = parseChunk(original);
+    const originalLine = socket.writes[0];
+    if (!originalLine) throw new Error("expected checksum envelope");
+    const first = parseChunk(Buffer.from(originalLine.toString().trim(), "base64"));
     if (first.status !== "success") throw new Error("expected valid chunk");
     socket.writes.length = 0;
     await client.retransmitChunk(first.envelope.messageId, first.envelope.index);
-    expect(socket.writes).toEqual([original]);
+    expect(socket.writes).toEqual([originalLine]);
     client.cleanup();
   });
 
   test("accepts camel-case raw checksum envelope capability", async () => {
     const socket = new FakeSocket();
-    const client = new RPCClient("test", "base64-newline");
+    const client = new RPCClient("test", "base64-newline", {
+      preserveConnectionWireFormat: true,
+    });
     client.setSocket(socket);
     setTransferDelegate(client);
 
@@ -110,6 +128,31 @@ describe("RPCClient", () => {
     }));
 
     expect(socket.writes.length).toBeGreaterThan(1);
+    expect(socket.writes.every((write) => {
+      if (write.at(-1) !== 0x0a) return false;
+      return parseChunk(Buffer.from(write.toString().trim(), "base64")).status === "success";
+    })).toBe(true);
+    client.cleanup();
+  });
+
+  test("preserves the Pi raw-envelope response override", async () => {
+    const socket = new FakeSocket();
+    const client = new RPCClient("test", "base64-newline", {
+      preserveConnectionWireFormat: false,
+    });
+    client.setSocket(socket);
+    setTransferDelegate(client);
+
+    await client.handleIncomingData(encodedCall("device.ota.transfer", {
+      offset: 0,
+      size: 4_000,
+      transport_capabilities: {
+        raw_checksum_envelopes: true,
+      },
+    }));
+
+    expect(socket.writes.length).toBeGreaterThan(1);
+    expect(socket.writes.every((write) => write.at(-1) !== 0x0a)).toBe(true);
     expect(socket.writes.every((write) => parseChunk(write).status === "success"))
       .toBe(true);
     client.cleanup();
@@ -185,6 +228,51 @@ describe("RPCClient", () => {
     expect(decode(parsed.payload)).toMatchObject({
       type: "event",
       topic: "control.event",
+    });
+    client.cleanup();
+  });
+
+  test("lets control traffic preempt multi-frame media artwork", async () => {
+    const writes: Buffer[] = [];
+    const client = new RPCClient("test");
+    let markFirstWriteStarted = () => {};
+    let releaseFirstWrite = () => {};
+    const firstWriteStarted = new Promise<void>((resolve) => {
+      markFirstWriteStarted = resolve;
+    });
+    const firstWriteGate = new Promise<void>((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+    client.setSocket({
+      async write(data) {
+        writes.push(Buffer.from(data));
+        if (writes.length === 1) {
+          markFirstWriteStarted();
+          await firstWriteGate;
+        }
+      },
+      end() {},
+    });
+
+    const artworkSend = client.sendEvent("media.now_playing.artwork", {
+      data: Buffer.alloc(8_000, 7).toString("base64"),
+      content_type: "image/jpeg",
+      media_generation: 12,
+    });
+    await firstWriteStarted;
+    const controlSend = client.sendEvent("media.control.state", { ready: true });
+    releaseFirstWrite();
+
+    await Promise.all([artworkSend, controlSend]);
+
+    expect(writes.length).toBeGreaterThan(2);
+    const second = writes[1];
+    if (!second) throw new Error("expected normal-priority write");
+    const parsed = parseChunk(second);
+    if (parsed.status !== "success") throw new Error("expected valid chunk");
+    expect(decode(parsed.payload)).toMatchObject({
+      type: "event",
+      topic: "media.control.state",
     });
     client.cleanup();
   });

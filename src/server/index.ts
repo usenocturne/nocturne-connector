@@ -1,12 +1,12 @@
 import { Elysia } from "elysia";
 import { cors } from "@elysiajs/cors";
 import type { Server } from "bun";
-import { PORT } from "./config";
+import { BIND_HOST, CLIENT_DIST_DIR, PORT } from "./config";
 import { createLogger } from "./utils/logger";
 import { waitForClockSync } from "./utils/readiness";
 import { NocturneManager } from "./nocturne-manager";
-import { infoRoutes } from "./routes/info";
-import { powerRoutes } from "./routes/power";
+import { createInfoRoutes } from "./routes/info";
+import { createPowerRoutes } from "./routes/power";
 import { createAuthRoutes } from "./routes/auth";
 import { createSetupRoutes } from "./routes/setup";
 import { createSpotifyRoutes } from "./routes/spotify";
@@ -14,7 +14,11 @@ import { createBluetoothRoutes } from "./routes/bluetooth";
 import { createDeviceRoutes } from "./routes/device";
 import { createAnalyticsRoutes } from "./routes/analytics";
 import { createOtaRoutes } from "./routes/ota";
+import { createMediaRoutes } from "./routes/media";
 import { existsSync } from "fs";
+import { createPlatformComposition } from "./platform";
+import { fileURLToPath } from "url";
+import { embeddedFiles } from "bun";
 
 const log = createLogger("Server");
 
@@ -40,6 +44,8 @@ function broadcast(type: string, data: any): void {
 }
 
 async function fetchAndApplyTimezone(): Promise<void> {
+  if (process.platform !== "linux") return;
+
   const maxAttempts = 8;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -75,20 +81,26 @@ async function fetchAndApplyTimezone(): Promise<void> {
 async function main() {
   log.info("Starting Nocturne Connector...");
 
-  const manager = new NocturneManager();
+  const platform = createPlatformComposition();
+  const manager = new NocturneManager({
+    bluetoothService: platform.bluetoothService,
+    hostBridge: platform.hostBridge ?? undefined,
+    sessionProtector: platform.sessionProtector ?? undefined,
+  });
   manager.setWSBroadcast(broadcast);
   await manager.initializeOffline();
 
   const app = new Elysia()
     .use(cors())
-    .use(infoRoutes)
-    .use(powerRoutes)
+    .use(createInfoRoutes())
+    .use(createPowerRoutes())
     .use(createAuthRoutes(manager.authService, manager.setupStateService))
     .use(createSetupRoutes(manager.setupStateService))
     .use(createSpotifyRoutes(manager.spotifyService))
     .use(createBluetoothRoutes(manager.bluetoothService))
     .use(createDeviceRoutes(manager))
     .use(createAnalyticsRoutes(manager.analyticsService))
+    .use(createMediaRoutes(manager.systemMediaService))
     .use(createOtaRoutes(manager.otaService))
     .ws("/ws", {
       open(ws) {
@@ -132,9 +144,46 @@ async function main() {
       },
     });
 
-  const staticDir = new URL("../dist/client", import.meta.url).pathname;
-  log.info(`Static file directory: ${staticDir} (exists: ${existsSync(staticDir)})`);
-  if (existsSync(staticDir)) {
+  const windowsHost = process.platform === "win32";
+  const staticDir = windowsHost
+    ? CLIENT_DIST_DIR ?? fileURLToPath(new URL("../dist/client", import.meta.url))
+    : new URL("../dist/client", import.meta.url).pathname;
+  const embeddedClient = new Map<string, Blob>();
+  for (const asset of windowsHost ? embeddedFiles : []) {
+    const name = (asset as Blob & { name?: string }).name;
+    if (!name) continue;
+    const normalizedName = name.replaceAll("\\", "/");
+    const marker = "/client/";
+    const markerIndex = normalizedName.lastIndexOf(marker);
+    if (markerIndex >= 0) {
+      embeddedClient.set(normalizedName.slice(markerIndex + marker.length), asset);
+    } else if (normalizedName.startsWith("client/")) {
+      embeddedClient.set(normalizedName.slice("client/".length), asset);
+    } else {
+      const basename = normalizedName.slice(normalizedName.lastIndexOf("/") + 1);
+      const extensionIndex = basename.lastIndexOf(".");
+      const stem = extensionIndex > 0 ? basename.slice(0, extensionIndex) : basename;
+      const extension = extensionIndex > 0 ? basename.slice(extensionIndex) : "";
+      const segments = stem.split("-");
+      const hasBunAssetHash = segments.length >= 3 && /^[a-z0-9]{8}$/i.test(segments.at(-1) ?? "");
+      const originalBasename = hasBunAssetHash
+        ? `${segments.slice(0, -1).join("-")}${extension}`
+        : basename;
+      if (extension === ".html" && stem.startsWith("index-")) {
+        embeddedClient.set("index.html", asset);
+      } else if (extension) {
+        embeddedClient.set(`assets/${basename}`, asset);
+        if (originalBasename !== basename) {
+          embeddedClient.set(`assets/${originalBasename}`, asset);
+        }
+      }
+    }
+  }
+  const hasStaticFiles = existsSync(staticDir) || embeddedClient.size > 0;
+  log.info(
+    `Static file directory: ${staticDir} (exists: ${existsSync(staticDir)}, embedded: ${embeddedClient.size})`,
+  );
+  if (hasStaticFiles) {
     const mimeTypes: Record<string, string> = {
       ".html": "text/html",
       ".js": "application/javascript",
@@ -154,9 +203,13 @@ async function main() {
       return mimeTypes[ext] || "application/octet-stream";
     };
 
+    const staticFile = (relativePath: string): Blob =>
+      embeddedClient.get(relativePath) ?? Bun.file(`${staticDir}/${relativePath}`);
+
     app.get("/assets/*", ({ params }) => {
-      const filePath = `${staticDir}/assets/${params["*"]}`;
-      const file = Bun.file(filePath);
+      const relativePath = `assets/${params["*"]}`;
+      const filePath = `${staticDir}/${relativePath}`;
+      const file = staticFile(relativePath);
       return new Response(file, {
         headers: { "content-type": getMime(filePath) },
       });
@@ -164,15 +217,19 @@ async function main() {
 
     app.get("*", ({ path }) => {
       if (path.startsWith("/api/") || path === "/ws") return;
-      return new Response(Bun.file(`${staticDir}/index.html`), {
+      return new Response(staticFile("index.html"), {
         headers: { "content-type": "text/html" },
       });
     });
   }
 
-  app.listen(PORT);
+  app.listen({ hostname: BIND_HOST, port: PORT });
   serverRef = app.server ?? null;
-  log.info(`Server listening on http://0.0.0.0:${PORT}`);
+  const boundPort = app.server?.port ?? PORT;
+  log.info(`Server listening on http://${BIND_HOST}:${boundPort}`);
+  if (windowsHost && process.env.NOCTURNE_HOST_PIPE) {
+    process.stdout.write(`NOCTURNE_READY_PORT=${boundPort}\n`);
+  }
   void runOnlineInit(manager);
 }
 

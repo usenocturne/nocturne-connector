@@ -5,6 +5,7 @@ import type { PairingPinEvent } from "../bluetooth/pairing-agent";
 import type { RFCOMMConnection } from "../bluetooth/rfcomm-server";
 import {
   BluetoothService,
+  bluetoothDisplayName,
   type BluetoothAdapterLike,
   type BluetoothTimerHandle,
   type BluetoothTimerScheduler,
@@ -63,8 +64,13 @@ class FakeRFCOMMClient implements RFCOMMClientLike {
   connected = false;
   address = "";
   readonly connectCalls: Array<{ address: string; channel?: number }> = [];
+  disconnectCalls = 0;
   private disconnectHandler: ((address: string) => void) | null = null;
   private connectFailures: Error[] = [];
+  private deferredConnect: {
+    started: () => void;
+    gate: Promise<void>;
+  } | null = null;
 
   setDataHandler(_handler: (data: Buffer) => void): void {}
 
@@ -75,6 +81,12 @@ class FakeRFCOMMClient implements RFCOMMClientLike {
   async connect(address: string, channel?: number): Promise<void> {
     this.connectCalls.push({ address, channel });
     this.address = address;
+    const deferred = this.deferredConnect;
+    if (deferred) {
+      this.deferredConnect = null;
+      deferred.started();
+      await deferred.gate;
+    }
     const failure = this.connectFailures.shift();
     if (failure) {
       this.connected = false;
@@ -84,6 +96,11 @@ class FakeRFCOMMClient implements RFCOMMClientLike {
   }
 
   async write(_data: Buffer | Uint8Array): Promise<void> {}
+
+  disconnect(): void {
+    this.disconnectCalls++;
+    this.connected = false;
+  }
 
   failNextConnects(count: number): void {
     for (let index = 0; index < count; index++) {
@@ -95,18 +112,31 @@ class FakeRFCOMMClient implements RFCOMMClientLike {
     this.connected = false;
     this.disconnectHandler?.(this.address);
   }
+
+  deferNextConnection(): { started: Promise<void>; release: () => void } {
+    let markStarted = () => {};
+    let release = () => {};
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    this.deferredConnect = { started: markStarted, gate };
+    return { started, release };
+  }
 }
 
 class FakeAdapter implements BluetoothAdapterLike {
   readonly removedAddresses: string[] = [];
+  devices: BluetoothDevice[] = [];
+  startDiscoveryCalls = 0;
+  stopDiscoveryCalls = 0;
+  private deviceConnectedHandler: ((address: string) => void) | null = null;
 
   async initialize(): Promise<void> {}
   async powerOn(): Promise<void> {}
   async powerOff(): Promise<void> {}
   async setDiscoverable(_enabled: boolean): Promise<void> {}
   async setPairable(_enabled: boolean): Promise<void> {}
-  async startDiscovery(): Promise<void> {}
-  async stopDiscovery(): Promise<void> {}
+  async startDiscovery(): Promise<void> { this.startDiscoveryCalls++; }
+  async stopDiscovery(): Promise<void> { this.stopDiscoveryCalls++; }
   async pairDevice(_address: string): Promise<void> {}
   async trustDevice(_address: string): Promise<void> {}
 
@@ -115,7 +145,7 @@ class FakeAdapter implements BluetoothAdapterLike {
   }
 
   async getDevices(): Promise<BluetoothDevice[]> {
-    return [];
+    return this.devices;
   }
 
   async getAdapterStatus(): Promise<{
@@ -127,23 +157,49 @@ class FakeAdapter implements BluetoothAdapterLike {
   }
 
   setOnPairComplete(_handler: (address: string) => void): void {}
-  setOnDeviceConnected(_handler: (address: string) => void): void {}
+  setOnDeviceConnected(handler: (address: string) => void): void {
+    this.deviceConnectedHandler = handler;
+  }
 
   setOnDeviceFound(_handler: (device: BluetoothDevice) => void): void {}
   setOnDeviceUpdated(_handler: (device: BluetoothDevice) => void): void {}
+
+  triggerDeviceConnected(address: string): void {
+    this.deviceConnectedHandler?.(address);
+  }
 }
 
 class FakeRFCOMMServer implements RFCOMMServerLike {
   private connections = new Map<string, RFCOMMConnection>();
+  private disconnectionHandler: ((devicePath: string) => void) | null = null;
+  disconnectCalls = 0;
 
   setConnectionHandler(_handler: (conn: RFCOMMConnection) => void): void {}
-  setDisconnectionHandler(_handler: (devicePath: string) => void): void {}
+  setDisconnectionHandler(handler: (devicePath: string) => void): void {
+    this.disconnectionHandler = handler;
+  }
   setDataHandler(_handler: (devicePath: string, data: Buffer) => void): void {}
   async register(): Promise<void> {}
   async writeToDevice(_devicePath: string, _data: Buffer): Promise<void> {}
 
   getConnections(): Map<string, RFCOMMConnection> {
     return this.connections;
+  }
+
+  disconnectDevice(address: string): boolean {
+    const matches = Array.from(this.connections.entries()).filter(
+      ([, connection]) => connection.address === address,
+    );
+    for (const [devicePath] of matches) {
+      this.connections.delete(devicePath);
+      this.disconnectCalls++;
+      this.disconnectionHandler?.(devicePath);
+    }
+    return matches.length > 0;
+  }
+
+  addConnection(devicePath: string, address: string): void {
+    this.connections.set(devicePath, { devicePath, address, fd: -1, stream: null });
   }
 }
 
@@ -158,23 +214,119 @@ class FakePairingAgent implements PairingAgentLike {
 }
 
 function makeHarness(
-  reconnectDelaysMs: readonly number[] = [1_000, 2_000, 4_000]
+  reconnectDelaysMs: readonly number[] = [1_000, 2_000, 4_000],
+  platform: NodeJS.Platform = "win32",
 ) {
   const adapter = new FakeAdapter();
   const client = new FakeRFCOMMClient();
+  const server = new FakeRFCOMMServer();
   const timers = new FakeTimers();
   const service = new BluetoothService({
+    platform,
     adapter,
     rfcommClient: client,
-    rfcommServer: new FakeRFCOMMServer(),
+    rfcommServer: server,
     pairingAgent: new FakePairingAgent(),
     timers,
     reconnectDelaysMs,
   });
-  return { adapter, client, service, timers };
+  return { adapter, client, server, service, timers };
 }
 
+describe("BluetoothService Pi parity", () => {
+  test("keeps scan lifetime client-owned and preserves BlueZ device state", async () => {
+    const { adapter, server, service, timers } = makeHarness(
+      [1_000, 2_000, 4_000],
+      "linux",
+    );
+    adapter.devices = [{
+      address: DEVICE_ADDRESS,
+      name: `Bluetooth ${DEVICE_ADDRESS}`,
+      paired: true,
+      connected: true,
+      trusted: true,
+      rssi: -42,
+      icon: "computer",
+    }];
+    server.addConnection("rfcomm-server:one", DEVICE_ADDRESS);
+    await service.initialize();
+    await service.startScan();
+
+    expect(timers.pendingCount).toBe(0);
+    expect(await service.getDevices()).toEqual(adapter.devices);
+    expect(service.getConnections().has("rfcomm-server:one")).toBeTrue();
+  });
+
+  test("keeps manual disconnect and close-before-unpair disabled", async () => {
+    const { adapter, client, server, service } = makeHarness(
+      [1_000, 2_000, 4_000],
+      "linux",
+    );
+    await service.initialize();
+    await service.connect(DEVICE_ADDRESS, 2);
+    server.addConnection("rfcomm-server:one", DEVICE_ADDRESS);
+
+    await expect(service.disconnect(DEVICE_ADDRESS)).rejects.toThrow(
+      "not supported",
+    );
+    await service.unpair(DEVICE_ADDRESS);
+
+    expect(client.disconnectCalls).toBe(0);
+    expect(server.disconnectCalls).toBe(0);
+    expect(adapter.removedAddresses).toEqual([DEVICE_ADDRESS]);
+  });
+
+  test("does not enter Windows retry backoff after a post-pair connect failure", async () => {
+    const { adapter, client, service, timers } = makeHarness(
+      [1_000, 2_000, 4_000],
+      "linux",
+    );
+    await service.initialize();
+    client.failNextConnects(1);
+    adapter.triggerDeviceConnected(DEVICE_ADDRESS);
+    expect(timers.scheduledDelays).toEqual([2_000]);
+
+    await timers.runNext();
+
+    expect(client.connectCalls).toEqual([{ address: DEVICE_ADDRESS, channel: 2 }]);
+    expect(timers.pendingCount).toBe(0);
+  });
+});
+
 describe("BluetoothService outbound reconnect", () => {
+  test("normalizes generated Windows Bluetooth names", () => {
+    expect(bluetoothDisplayName("", DEVICE_ADDRESS)).toBe("Unknown Device");
+    expect(bluetoothDisplayName(`Bluetooth ${DEVICE_ADDRESS.toLowerCase()}`, DEVICE_ADDRESS))
+      .toBe("Unknown Device");
+    expect(bluetoothDisplayName("Nocturne (Q01S)", DEVICE_ADDRESS))
+      .toBe("Nocturne (Q01S)");
+  });
+
+  test("does not scan during initialization and stops a requested scan after 30 seconds", async () => {
+    const { adapter, service, timers } = makeHarness();
+    await service.initialize();
+    expect(adapter.startDiscoveryCalls).toBe(0);
+
+    await service.startScan();
+    expect(adapter.startDiscoveryCalls).toBe(1);
+    expect(timers.scheduledDelays.at(-1)).toBe(30_000);
+
+    await timers.runNext();
+    expect(adapter.stopDiscoveryCalls).toBe(1);
+  });
+
+  test("manual scan stop cancels the automatic timeout", async () => {
+    const { adapter, service, timers } = makeHarness();
+    await service.initialize();
+    await service.startScan();
+    expect(timers.pendingCount).toBe(1);
+
+    await service.stopScan();
+
+    expect(adapter.stopDiscoveryCalls).toBe(1);
+    expect(timers.pendingCount).toBe(0);
+  });
+
   test("emits disconnect before redialing the last outbound address", async () => {
     const { client, service, timers } = makeHarness();
     const events: string[] = [];
@@ -217,6 +369,97 @@ describe("BluetoothService outbound reconnect", () => {
 
     client.triggerUnexpectedDisconnect();
     expect(timers.scheduledDelays.at(-1)).toBe(10);
+  });
+
+  test("resets a stale outbound route before entering reconnect backoff", async () => {
+    const { client, service, timers } = makeHarness();
+    const events: string[] = [];
+    service.onEvent((event) => events.push(event));
+    await service.initialize();
+    await service.connect(DEVICE_ADDRESS, 2);
+    events.length = 0;
+
+    await service.recoverOutboundConnection(DEVICE_ADDRESS);
+
+    expect(client.disconnectCalls).toBe(1);
+    expect(events).toEqual(["deviceDisconnected"]);
+    expect(timers.scheduledDelays.at(-1)).toBe(1_000);
+  });
+
+  test("manual disconnect closes the route and updates route-backed device state", async () => {
+    const { adapter, client, service, timers } = makeHarness();
+    const events: string[] = [];
+    adapter.devices = [{
+      address: DEVICE_ADDRESS,
+      name: "Nocturne (Q01S)",
+      paired: true,
+      connected: true,
+      trusted: true,
+      rssi: -42,
+      icon: "computer",
+    }];
+    service.onEvent((event) => events.push(event));
+    await service.initialize();
+    await service.connect(DEVICE_ADDRESS, 2);
+    expect((await service.getDevices())[0]?.connected).toBeTrue();
+    expect(service.getConnections().has(`rfcomm-client:${DEVICE_ADDRESS}`)).toBeTrue();
+    events.length = 0;
+
+    await service.disconnect(DEVICE_ADDRESS);
+
+    expect(client.disconnectCalls).toBe(1);
+    expect(client.connected).toBeFalse();
+    expect(events).toEqual(["deviceDisconnected"]);
+    expect(timers.pendingCount).toBe(0);
+    expect((await service.getDevices())[0]?.connected).toBeFalse();
+    expect(service.getConnections().size).toBe(0);
+  });
+
+  test("manual disconnect closes outbound and every inbound route for the address", async () => {
+    const { client, server, service } = makeHarness();
+    await service.initialize();
+    await service.connect(DEVICE_ADDRESS, 2);
+    server.addConnection("rfcomm-server:one", DEVICE_ADDRESS);
+    server.addConnection("rfcomm-server:two", DEVICE_ADDRESS);
+
+    await service.disconnect(DEVICE_ADDRESS);
+
+    expect(client.disconnectCalls).toBe(1);
+    expect(server.disconnectCalls).toBe(2);
+    expect(service.getConnections().size).toBe(0);
+  });
+
+  test("unpair closes an active route before removing the bond", async () => {
+    const { adapter, client, service, timers } = makeHarness();
+    await service.initialize();
+    await service.connect(DEVICE_ADDRESS, 2);
+
+    await service.unpair(DEVICE_ADDRESS);
+
+    expect(client.disconnectCalls).toBe(1);
+    expect(adapter.removedAddresses).toEqual([DEVICE_ADDRESS]);
+    expect(timers.pendingCount).toBe(0);
+
+    adapter.triggerDeviceConnected(DEVICE_ADDRESS);
+    expect(timers.pendingCount).toBe(0);
+  });
+
+  test("unpair closes an automatic connection that completes after suppression", async () => {
+    const { adapter, client, service, timers } = makeHarness();
+    await service.initialize();
+    const deferred = client.deferNextConnection();
+    adapter.triggerDeviceConnected(DEVICE_ADDRESS);
+    const attempt = timers.runNext();
+    await deferred.started;
+
+    await service.unpair(DEVICE_ADDRESS);
+    deferred.release();
+    await attempt;
+
+    expect(client.connected).toBeFalse();
+    expect(client.disconnectCalls).toBe(1);
+    expect(adapter.removedAddresses).toEqual([DEVICE_ADDRESS]);
+    expect(timers.pendingCount).toBe(0);
   });
 
   test("cancels pending redials on manual connect and unpair", async () => {

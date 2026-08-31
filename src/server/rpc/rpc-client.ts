@@ -17,6 +17,10 @@ export interface RPCClientDelegate {
 export type WireFormat = "chunked" | "base64-newline" | "raw";
 type SendPriority = "normal" | "bulk";
 
+export interface RPCClientOptions {
+  preserveConnectionWireFormat?: boolean;
+}
+
 interface RetainedChunks {
   chunks: Map<number, Buffer>;
   sentAt: number;
@@ -44,10 +48,17 @@ export class RPCClient {
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
   private connectionId: string;
   private wireFormat: WireFormat;
+  private readonly preserveConnectionWireFormat: boolean;
 
-  constructor(connectionId: string, wireFormat: WireFormat = "chunked") {
+  constructor(
+    connectionId: string,
+    wireFormat: WireFormat = "chunked",
+    options: RPCClientOptions = {},
+  ) {
     this.connectionId = connectionId;
     this.wireFormat = wireFormat;
+    this.preserveConnectionWireFormat =
+      options.preserveConnectionWireFormat ?? process.platform === "win32";
     this.cleanupInterval = setInterval(() => this.periodicCleanup(), 30000);
   }
 
@@ -212,7 +223,9 @@ export class RPCClient {
         const m = msg as RPCCallMessage;
         if (this.delegate) {
           const response = await this.delegate.onCall(m.id, m.method, m.params);
-          const responseWireFormat = responseWireFormatForCall(m.method, m.params);
+          const responseWireFormat = this.preserveConnectionWireFormat
+            ? undefined
+            : responseWireFormatForCall(m.method, m.params);
           if (response.error) {
             await this.sendMessage(
               createError(m.id, response.error),
@@ -443,7 +456,9 @@ function priorityForTopic(topic: string): SendPriority {
 }
 
 function isBulkMethod(value: string): boolean {
-  return value === "ota.chunk" ||
+  return value === "media.now_playing.artwork" ||
+    value === "media.nowPlaying.artwork" ||
+    value === "ota.chunk" ||
     value === "system.ota.chunk" ||
     value === "ota.asset_range_chunk" ||
     value === "system.ota.asset_range_chunk";
@@ -460,7 +475,7 @@ function responseWireFormatForCall(
   if (!isRecord(capabilities)) return undefined;
 
   return capabilities.raw_checksum_envelopes === true ||
-    capabilities.rawChecksumEnvelopes === true
+      capabilities.rawChecksumEnvelopes === true
     ? "chunked"
     : undefined;
 }

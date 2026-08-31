@@ -4,6 +4,7 @@ import { LayoutDashboard, Bluetooth, Music, Settings, Menu, X } from "lucide-rea
 import { clsx } from "clsx";
 import { Logo } from "./Logo";
 import { Footer } from "./Footer";
+import { useConnectorPlatform } from "../hooks/useConnectorPlatform";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -43,11 +44,15 @@ function DesktopNav() {
 export function Layout() {
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { isWindows } = useConnectorPlatform();
 
   return (
     <div className="flex min-h-screen flex-col bg-bg">
       <header className="sticky top-0 z-40 border-b border-line bg-bg/80 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-5xl items-center justify-between">
+        <div className={clsx(
+          "mx-auto flex h-16 max-w-5xl items-center justify-between",
+          isWindows && "px-6",
+        )}>
           <NavLink to="/" className="shrink-0">
             <Logo className="h-8" />
           </NavLink>

@@ -1,0 +1,13 @@
+target/
+build/
+.DS_Store
+src-tauri/gen/
+bundles/*
+bundles/
+dist/
+binaries/
+*.pfx
+*.cer
+*.msix
+*.exe
+*.zip

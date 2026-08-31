@@ -1,5 +1,8 @@
 import { RPCClient, type RPCClientDelegate } from "./rpc/rpc-client";
-import { SpotifyService } from "./services/spotify-service";
+import {
+  SpotifyService,
+  type SpotifySkipPreferenceStore,
+} from "./services/spotify-service";
 import {
   normalizeSpotifyCommand,
   SpotifyCommandDispatcher,
@@ -15,7 +18,7 @@ import {
   type CarThingOtaVersionLanes,
 } from "./services/car-thing-ota-service";
 import { BluetoothService } from "./services/bluetooth-service";
-import { AuthService } from "./services/auth-service";
+import { AuthService, type SessionProtector } from "./services/auth-service";
 import { SetupStateService } from "./services/setup-state-service";
 import { AnalyticsService } from "./services/analytics-service";
 import { SpotifyDatabaseStorage } from "./services/spotify-database";
@@ -23,8 +26,14 @@ import { createLogger } from "./utils/logger";
 import { getConnectorVersion } from "./utils/version";
 import { existsSync, statSync } from "fs";
 import { MAX_OTA_TRANSFER_WINDOW_BYTES } from "./services/ota-transfer";
+import type { HostBridgeClient } from "./platform/host-bridge";
+import {
+  SystemMediaService,
+  type SystemMediaPreferenceStore,
+} from "./services/system-media-service";
 
 const log = createLogger("NocturneManager");
+const KEEP_ALIVE_RPC_TIMEOUT_MS = 5_000;
 
 interface DeviceConnection {
   rpcClient: RPCClient;
@@ -54,7 +63,12 @@ export interface CarThingOtaRequestParams {
 type WSBroadcast = (type: string, data: any) => void;
 
 export interface NocturneManagerDependencies {
+  platform?: NodeJS.Platform;
   bluetoothService?: BluetoothService;
+  hostBridge?: HostBridgeClient;
+  sessionProtector?: SessionProtector;
+  spotifySkipPreferenceStore?: SpotifySkipPreferenceStore;
+  systemMediaPreferenceStore?: SystemMediaPreferenceStore;
 }
 
 export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDelegate {
@@ -67,9 +81,11 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   readonly carThingOtaService = new CarThingOTAService();
   readonly bluetoothService: BluetoothService;
   readonly setupStateService = new SetupStateService();
+  readonly systemMediaService: SystemMediaService | null;
 
   private connections = new Map<string, DeviceConnection>();
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+  private keepAliveFailures = new Map<string, number>();
   private didSendInitialPing = false;
   private wsBroadcast: WSBroadcast | null = null;
   private downloadedOTAFilePath: string | null = null;
@@ -78,16 +94,35 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   private activeCarThingUpdate: CarThingAvailableUpdate | null = null;
   private carThingInstallPromise: Promise<void> | null = null;
   private carThingRangeTasks = new Map<string, AbortController>();
+  private pendingHostVolumePercent: number | null = null;
+  private hostVolumeReportTask: Promise<void> | null = null;
+  private systemMediaModeTask: Promise<void> = Promise.resolve();
+  private readonly platform: NodeJS.Platform;
 
   constructor(dependencies: NocturneManagerDependencies = {}) {
+    this.platform = dependencies.platform ?? process.platform;
     this.bluetoothService = dependencies.bluetoothService ?? new BluetoothService();
-    this.authService = new AuthService();
+    this.authService = new AuthService({
+      sessionProtector: dependencies.sessionProtector,
+    });
     const dbStorage = new SpotifyDatabaseStorage(this.authService.client);
-    this.spotifyService = new SpotifyService(dbStorage, () => this.authService.currentUser?.id ?? null);
+    this.spotifyService = new SpotifyService(
+      dbStorage,
+      () => this.authService.currentUser?.id ?? null,
+      dependencies.spotifySkipPreferenceStore,
+      this.platform === "win32",
+    );
     this.analyticsService = new AnalyticsService(this.authService.client);
     this.spotifyCommands = new SpotifyCommandDispatcher(this.spotifyService);
     this.spotifyWebSocket = new SpotifyWebSocketService(this.spotifyService);
     this.spotifyWebSocket.setDelegate(this);
+    this.systemMediaService = dependencies.hostBridge
+      ? new SystemMediaService(dependencies.hostBridge, {
+          sendEvent: (topic, data) => this.broadcastToDevices(topic, data),
+          sendVolume: (volumePercent) =>
+            this.queueHostVolumeUpdate(volumePercent),
+        }, dependencies.systemMediaPreferenceStore)
+      : null;
 
     this.authService.onAuthStateChange(async (user) => {
       await this.spotifyService.checkAuthStatus();
@@ -99,10 +134,23 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
     });
 
     this.spotifyService.onAuthStateChange((state) => {
+      this.systemMediaModeTask = this.systemMediaModeTask
+        .catch((error) => {
+          log.warn(`Previous host Spotify media transition failed: ${error}`);
+        })
+        .then(async () => {
+          await this.systemMediaService?.setForcedOn(
+            this.spotifyService.isSpotifySkipped,
+          );
+          await this.systemMediaService?.setSpotifyLinked(state.status === "linked");
+        })
+        .catch((error) => {
+          log.warn(`Host Spotify media state failed: ${error}`);
+        });
       this.broadcastToWebSocket("spotify.auth.status", state);
       this.broadcastToDevices("spotify.auth.status", {
         authenticated: state.status === "linked",
-        skipped: false,
+        skipped: state.status === "skipped",
       });
 
       if (state.status === "loading" || state.status === "polling") {
@@ -140,6 +188,16 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
       log.warn(`Discarding invalid persisted Car Thing OTA state: ${errorMessage(err)}`);
       await this.carThingOtaService.clearActiveUpdate(false);
       this.activeCarThingUpdate = null;
+    }
+    if (this.systemMediaService) {
+      try {
+        await this.systemMediaService.setForcedOn(
+          this.spotifyService.isSpotifySkipped,
+        );
+        await this.systemMediaService.start();
+      } catch (err) {
+        log.warn(`System media initialization failed: ${errorMessage(err)}`);
+      }
     }
     await this.bluetoothService.initialize();
 
@@ -185,7 +243,9 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
 
   private handleNewConnection(devicePath: string, address: string): void {
     const isOutbound = devicePath.startsWith("rfcomm-client:");
-    const rpcClient = new RPCClient(devicePath, "base64-newline");
+    const rpcClient = new RPCClient(devicePath, "base64-newline", {
+      preserveConnectionWireFormat: this.platform === "win32",
+    });
     rpcClient.setDelegate(this);
     rpcClient.setSocket({
       write: (data: Buffer | Uint8Array) => {
@@ -198,6 +258,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
     });
 
     this.connections.set(devicePath, { rpcClient, deviceInfo: null });
+    this.keepAliveFailures.delete(devicePath);
     this.didSendInitialPing = false;
     this.startKeepAlive(15);
 
@@ -211,6 +272,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
     if (conn) {
       conn.rpcClient.cleanup();
       this.connections.delete(devicePath);
+      this.keepAliveFailures.delete(devicePath);
     }
 
     if (this.connections.size === 0) {
@@ -355,6 +417,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const tzOffset = -now.getTimezoneOffset() * 60;
     const isAuthenticated = this.spotifyService.authState.status === "linked";
+    const spotifySkipped = this.spotifyService.authState.status === "skipped";
     const pad = (n: number) => String(n).padStart(2, "0");
     const datetime = `${now.getUTCFullYear()}-${pad(now.getUTCMonth() + 1)}-${pad(now.getUTCDate())} ${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}:${pad(now.getUTCSeconds())}`;
     const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
@@ -368,13 +431,13 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
 
     await this.broadcastToDevices("spotify.auth.status", {
       authenticated: isAuthenticated,
-      skipped: false,
+      skipped: spotifySkipped,
     });
 
     await this.broadcastToDevices("app.ready", {
       platform: "web",
       timestamp: Date.now(),
-      spotifySkipped: false,
+      spotifySkipped,
       datetime,
       time,
       timezone: {
@@ -385,6 +448,8 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
       },
     });
 
+    await this.systemMediaService?.replayLatest();
+
     log.info("Sent app.ready in response to daemon.ready");
   }
 
@@ -393,9 +458,39 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
     this.keepAliveTimer = setInterval(async () => {
       for (const [id, conn] of this.connections) {
         try {
-          await conn.rpcClient.call("ping", { message: "keepalive", volumePercent: 50 });
+          if (this.platform !== "win32") {
+            await conn.rpcClient.call("ping", {
+              message: "keepalive",
+              volumePercent: 50,
+            });
+            continue;
+          }
+          await conn.rpcClient.call(
+            "ping",
+            {
+              message: "keepalive",
+              volumePercent: this.systemMediaService?.currentVolumePercent ?? 50,
+            },
+            KEEP_ALIVE_RPC_TIMEOUT_MS,
+          );
+          this.keepAliveFailures.delete(id);
         } catch (err) {
           log.warn(`Keep-alive failed for ${id}: ${err}`);
+          if (this.platform !== "win32") continue;
+          if (!this.connections.has(id)) {
+            this.keepAliveFailures.delete(id);
+            continue;
+          }
+          const failures = (this.keepAliveFailures.get(id) ?? 0) + 1;
+          this.keepAliveFailures.set(id, failures);
+          if (failures >= 2 && id.startsWith("rfcomm-client:")) {
+            const address = id.slice("rfcomm-client:".length);
+            this.keepAliveFailures.delete(id);
+            log.warn(`Resetting stale outbound RFCOMM route for ${address}`);
+            log.warn("Restarting the Windows connector sidecar to release the stale RFCOMM route");
+            setTimeout(() => process.exit(75), 0);
+            return;
+          }
         }
       }
     }, intervalSec * 1000);
@@ -418,6 +513,35 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
     }
   }
 
+  private queueHostVolumeUpdate(volumePercent: number): Promise<void> {
+    this.pendingHostVolumePercent = volumePercent;
+    if (!this.hostVolumeReportTask) {
+      this.hostVolumeReportTask = this.flushHostVolumeUpdates().finally(() => {
+        this.hostVolumeReportTask = null;
+        if (this.pendingHostVolumePercent !== null) {
+          void this.queueHostVolumeUpdate(this.pendingHostVolumePercent);
+        }
+      });
+    }
+    return this.hostVolumeReportTask;
+  }
+
+  private async flushHostVolumeUpdates(): Promise<void> {
+    while (this.pendingHostVolumePercent !== null) {
+      const volumePercent = this.pendingHostVolumePercent;
+      this.pendingHostVolumePercent = null;
+      for (const [id, conn] of this.connections) {
+        try {
+          await conn.rpcClient.call("device.volume.update", {
+            volume_percent: volumePercent,
+          });
+        } catch (err) {
+          log.warn(`Host volume update to ${id} failed: ${errorMessage(err)}`);
+        }
+      }
+    }
+  }
+
   async onCall(id: string, method: string, params: unknown): Promise<{ result?: unknown; error?: string }> {
     log.info(`RPC call: ${method}`);
     const p = (params as any) ?? {};
@@ -433,12 +557,22 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
       }
 
       if (normalizedMethod === "spotify.auth.get_status") {
-        return { result: { authenticated: this.spotifyService.authState.status === "linked", skipped: false } };
+        return {
+          result: {
+            authenticated: this.spotifyService.authState.status === "linked",
+            skipped: this.spotifyService.authState.status === "skipped",
+          },
+        };
       }
 
       if (normalizedMethod.startsWith("spotify.")) {
         const result = await this.spotifyCommands.dispatch(normalizedMethod, p);
         return { result };
+      }
+
+      if (method.startsWith("media.control.") && this.systemMediaService) {
+        const status = await this.systemMediaService.handleControl(method);
+        if (status) return { result: { status } };
       }
 
       if (method === "device.ota.check") {
