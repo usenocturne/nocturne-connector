@@ -26,7 +26,7 @@
 ## Prerequisites
 
 - Car Thing with Nocturne 4.1.0 or later installed
-- Raspberry Pi with networking, a Mac with macOS 15.0 or newer, or Windows 10+
+- Raspberry Pi with networking, or a Mac with macOS 15.0 or newer.
   - Pi 1 and 2 are not supported due to the lack of onboard Wi-Fi
   - Pi Zero 1 (W) is not supported due to the old architecture
 - SD card (Raspberry Pi)
