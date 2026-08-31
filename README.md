@@ -59,16 +59,6 @@
 
 </details>
 
-<details>
-<summary><img src="https://usenocturne.com/favicon.ico" height="14" style="vertical-align: middle;"> Windows 10+ </summary>
-
-1. Download the setup .exe from the [latest release](https://github.com/usenocturne/nocturne-connector/releases/latest).
-2. Run the installer.
-3. Start Nocturne Connector from the Start menu.
-4. Finish setting up Nocturne Connector by following the steps on screen.
-
-</details>
-
 ## Donate
 
 Nocturne is a massive endeavor, and the team has spent every day over the last year making it a reality out of our passion for creating something that people like you love to use.
