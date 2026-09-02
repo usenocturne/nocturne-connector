@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { Layout } from "./components/Layout";
+import { BluetoothDeviceList } from "./components/BluetoothDeviceList";
 import { ConnectorPlatformProvider } from "./hooks/useConnectorPlatform";
 import { SpotifyAuth } from "./pages/SpotifyAuth";
 
@@ -38,4 +39,28 @@ describe("shared connector UI platform isolation", () => {
     expect(linux).not.toContain("Windows PC");
     expect(windows).toContain("Skip for now");
   });
+
+  test("keeps one Windows device action pending through disconnect and unpair", () => {
+    const markup = renderToStaticMarkup(
+      <BluetoothDeviceList
+        devices={[{
+          address: "30:E3:D6:00:B5:5F",
+          name: "Nocturne (Q01S)",
+          paired: true,
+          connected: false,
+          trusted: true,
+          rssi: -42,
+        }]}
+        onPair={() => {}}
+        onUnpair={() => {}}
+        onConnect={() => {}}
+        busyAddress="30:E3:D6:00:B5:5F"
+        busyAction="unpair"
+      />,
+    );
+
+    expect(markup).toContain("Unpairing...");
+    expect(markup).toContain("disabled");
+  });
+
 });

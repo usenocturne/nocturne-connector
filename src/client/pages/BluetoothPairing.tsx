@@ -5,6 +5,7 @@ import { BluetoothDeviceList } from "../components/BluetoothDeviceList";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Search, Bluetooth as BluetoothIcon } from "lucide-react";
 import {
   AlertDialog,
@@ -34,6 +35,7 @@ interface PairingPinEvent {
   name: string;
   pin: string;
   type: "bluetooth_pin";
+  confirmationRequired?: boolean;
 }
 
 export function BluetoothPairing() {
@@ -43,7 +45,11 @@ export function BluetoothPairing() {
   const [connections, setConnections] = useState<any[]>([]);
   const [scanning, setScanning] = useState(false);
   const [pinEvent, setPinEvent] = useState<PairingPinEvent | null>(null);
+  const [pairError, setPairError] = useState<string | null>(null);
+  const [pairingAddress, setPairingAddress] = useState<string | null>(null);
+  const [unpairingAddress, setUnpairingAddress] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  const windowsScanGenerationRef = useRef(0);
 
   useEffect(() => {
     return () => { mountedRef.current = false; };
@@ -65,11 +71,25 @@ export function BluetoothPairing() {
     }
   }, []));
 
-  useEvent("bluetooth.pairingCancelled", useCallback(() => {
+  useEvent<{ error?: string }>("bluetooth.pairingCancelled", useCallback((event) => {
     setPinEvent(null);
+    setPairingAddress(null);
+    if (typeof event?.error === "string" && event.error.length > 0) {
+      setPairError(event.error);
+    }
+  }, []));
+
+  useEvent("bluetooth.devicePaired", useCallback(() => {
+    setPinEvent(null);
+    setPairingAddress(null);
+    setPairError(null);
   }, []));
 
   const handleConfirm = async () => {
+    if (pinEvent?.confirmationRequired === false) {
+      setPinEvent(null);
+      return;
+    }
     setPinEvent(null);
     try { await post("/api/bluetooth/pairing-confirm"); } catch {}
     refresh();
@@ -101,15 +121,22 @@ export function BluetoothPairing() {
       return;
     }
 
+    const scanGeneration = ++windowsScanGenerationRef.current;
     try {
       await post("/api/bluetooth/scan");
       const refreshCount = Math.ceil(
         WINDOWS_SCAN_DURATION_MS / SCAN_REFRESH_MS,
       );
       for (let i = 0; i < refreshCount; i++) {
-        if (!mountedRef.current) break;
+        if (
+          !mountedRef.current ||
+          scanGeneration !== windowsScanGenerationRef.current
+        ) break;
         await new Promise((r) => setTimeout(r, SCAN_REFRESH_MS));
-        if (!mountedRef.current) break;
+        if (
+          !mountedRef.current ||
+          scanGeneration !== windowsScanGenerationRef.current
+        ) break;
         try {
           setDevices((await get("/api/bluetooth/devices")).devices ?? []);
         } catch {}
@@ -117,13 +144,61 @@ export function BluetoothPairing() {
     } catch (error) {
       console.error("Bluetooth scan failed:", error);
     } finally {
-      try {
-        await post("/api/bluetooth/stop-scan");
-      } catch (error) {
-        console.error("Unable to stop Bluetooth scan:", error);
+      if (scanGeneration === windowsScanGenerationRef.current) {
+        try {
+          await post("/api/bluetooth/stop-scan");
+        } catch (error) {
+          console.error("Unable to stop Bluetooth scan:", error);
+        }
+        if (mountedRef.current) await refresh();
+        if (mountedRef.current) setScanning(false);
       }
-      if (mountedRef.current) await refresh();
-      if (mountedRef.current) setScanning(false);
+    }
+  };
+
+  const pairDevice = async (address: string) => {
+    if (isWindows && (pairingAddress || unpairingAddress)) return;
+    setPairError(null);
+    if (isWindows) setPairingAddress(address);
+    if (isWindows) {
+      windowsScanGenerationRef.current++;
+      setScanning(false);
+      await post("/api/bluetooth/stop-scan").catch(() => undefined);
+    }
+    try {
+      await post(`/api/bluetooth/pair/${address}`);
+      await post(`/api/bluetooth/trust/${address}`).catch(() => undefined);
+      await refresh();
+    } catch (error) {
+      if (isWindows) setPairingAddress(null);
+      setPairError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const unpairDevice = async (address: string) => {
+    if (unpairingAddress) return;
+    setPairError(null);
+    setUnpairingAddress(address);
+    try {
+      await post(`/api/bluetooth/unpair/${address}`);
+      setDevices((current) =>
+        current.filter((device) =>
+          typeof device?.address !== "string" ||
+          device.address.toUpperCase() !== address.toUpperCase()
+        )
+      );
+      setConnections((current) =>
+        current.filter((connection) =>
+          typeof connection?.address !== "string" ||
+          connection.address.toUpperCase() !== address.toUpperCase()
+        )
+      );
+      await refresh();
+    } catch (error) {
+      setPairError(error instanceof Error ? error.message : String(error));
+      await refresh();
+    } finally {
+      setUnpairingAddress(null);
     }
   };
 
@@ -151,6 +226,12 @@ export function BluetoothPairing() {
           </Button>
         </div>
       </div>
+
+      {pairError && (
+        <Alert variant="destructive" className="mb-6">
+          <AlertDescription>{pairError}</AlertDescription>
+        </Alert>
+      )}
 
       {connections.length > 0 && (
         <div className="mb-8">
@@ -183,8 +264,19 @@ export function BluetoothPairing() {
         </h3>
         <BluetoothDeviceList
           devices={devices}
-          onPair={async (addr) => { await post(`/api/bluetooth/pair/${addr}`); await post(`/api/bluetooth/trust/${addr}`).catch(() => {}); refresh(); }}
-          onUnpair={async (addr) => { await post(`/api/bluetooth/unpair/${addr}`); refresh(); }}
+          onPair={isWindows
+            ? pairDevice
+            : async (addr) => {
+                await post(`/api/bluetooth/pair/${addr}`);
+                await post(`/api/bluetooth/trust/${addr}`).catch(() => undefined);
+                refresh();
+              }}
+          onUnpair={isWindows
+            ? unpairDevice
+            : async (addr) => {
+                await post(`/api/bluetooth/unpair/${addr}`);
+                refresh();
+              }}
           onConnect={async (addr) => { await post(`/api/bluetooth/connect/${addr}`); refresh(); }}
           onDisconnect={isWindows
             ? async (addr) => {
@@ -192,15 +284,23 @@ export function BluetoothPairing() {
                 refresh();
               }
             : undefined}
+          busyAddress={isWindows ? unpairingAddress ?? pairingAddress : undefined}
+          busyAction={unpairingAddress ? "unpair" : "pair"}
         />
       </div>
 
       <AlertDialog open={!!pinEvent}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Bluetooth Pairing Request</AlertDialogTitle>
+            <AlertDialogTitle>
+              {pinEvent?.confirmationRequired === false
+                ? "Bluetooth Pairing PIN"
+                : "Bluetooth Pairing Request"}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              Confirm that this PIN matches the one shown on{" "}
+              {pinEvent?.confirmationRequired === false
+                ? "Enter this PIN on "
+                : "Confirm that this PIN matches the one shown on "}
               <span className="font-medium text-fg">
                 {pinEvent?.name || pinEvent?.address}
               </span>
@@ -212,8 +312,12 @@ export function BluetoothPairing() {
             </span>
           </div>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={handleReject}>Reject</AlertDialogCancel>
-            <AlertDialogAction onClick={handleConfirm}>Confirm</AlertDialogAction>
+            {pinEvent?.confirmationRequired !== false && (
+              <AlertDialogCancel onClick={handleReject}>Reject</AlertDialogCancel>
+            )}
+            <AlertDialogAction onClick={handleConfirm}>
+              {pinEvent?.confirmationRequired === false ? "Done" : "Confirm"}
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

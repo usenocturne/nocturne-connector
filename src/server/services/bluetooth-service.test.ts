@@ -6,6 +6,7 @@ import type { RFCOMMConnection } from "../bluetooth/rfcomm-server";
 import {
   BluetoothService,
   bluetoothDisplayName,
+  prioritizeWindowsDevices,
   type BluetoothAdapterLike,
   type BluetoothTimerHandle,
   type BluetoothTimerScheduler,
@@ -15,6 +16,18 @@ import {
 } from "./bluetooth-service";
 
 const DEVICE_ADDRESS = "30:E3:D6:00:B5:5F";
+
+function bluetoothDevice(name: string, address: string): BluetoothDevice {
+  return {
+    address,
+    name,
+    paired: false,
+    connected: false,
+    trusted: false,
+    rssi: -100,
+    icon: "computer",
+  };
+}
 
 class FakeTimerHandle implements BluetoothTimerHandle {
   cancelled = false;
@@ -125,6 +138,8 @@ class FakeRFCOMMClient implements RFCOMMClientLike {
 
 class FakeAdapter implements BluetoothAdapterLike {
   readonly removedAddresses: string[] = [];
+  readonly discoverableValues: boolean[] = [];
+  readonly pairableValues: boolean[] = [];
   devices: BluetoothDevice[] = [];
   startDiscoveryCalls = 0;
   stopDiscoveryCalls = 0;
@@ -133,8 +148,12 @@ class FakeAdapter implements BluetoothAdapterLike {
   async initialize(): Promise<void> {}
   async powerOn(): Promise<void> {}
   async powerOff(): Promise<void> {}
-  async setDiscoverable(_enabled: boolean): Promise<void> {}
-  async setPairable(_enabled: boolean): Promise<void> {}
+  async setDiscoverable(enabled: boolean): Promise<void> {
+    this.discoverableValues.push(enabled);
+  }
+  async setPairable(enabled: boolean): Promise<void> {
+    this.pairableValues.push(enabled);
+  }
   async startDiscovery(): Promise<void> { this.startDiscoveryCalls++; }
   async stopDiscovery(): Promise<void> { this.stopDiscoveryCalls++; }
   async pairDevice(_address: string): Promise<void> {}
@@ -234,6 +253,23 @@ function makeHarness(
 }
 
 describe("BluetoothService Pi parity", () => {
+  test("preserves adapter order even when a Nocturne device is found later", async () => {
+    const { adapter, service } = makeHarness([1_000], "linux");
+    adapter.devices = [
+      bluetoothDevice("Keyboard", "00:00:00:00:00:01"),
+      bluetoothDevice("Nocturne (Q01S)", DEVICE_ADDRESS),
+    ];
+    await service.initialize();
+
+    const devices = await service.getDevices();
+
+    expect(devices).toBe(adapter.devices);
+    expect(devices.map(({ name }) => name)).toEqual([
+      "Keyboard",
+      "Nocturne (Q01S)",
+    ]);
+  });
+
   test("keeps scan lifetime client-owned and preserves BlueZ device state", async () => {
     const { adapter, server, service, timers } = makeHarness(
       [1_000, 2_000, 4_000],
@@ -250,6 +286,8 @@ describe("BluetoothService Pi parity", () => {
     }];
     server.addConnection("rfcomm-server:one", DEVICE_ADDRESS);
     await service.initialize();
+    expect(adapter.discoverableValues).toEqual([true]);
+    expect(adapter.pairableValues).toEqual([true]);
     await service.startScan();
 
     expect(timers.pendingCount).toBe(0);
@@ -291,9 +329,62 @@ describe("BluetoothService Pi parity", () => {
     expect(client.connectCalls).toEqual([{ address: DEVICE_ADDRESS, channel: 2 }]);
     expect(timers.pendingCount).toBe(0);
   });
+
+  test("does not change Pi discovery ownership when pairing", async () => {
+    const { adapter, service, timers } = makeHarness(
+      [1_000, 2_000, 4_000],
+      "linux",
+    );
+    await service.initialize();
+    await service.startScan();
+    await service.pair(DEVICE_ADDRESS);
+
+    expect(adapter.stopDiscoveryCalls).toBe(0);
+    expect(timers.pendingCount).toBe(0);
+  });
 });
 
 describe("BluetoothService outbound reconnect", () => {
+  test("stably moves newly found Nocturne devices ahead of other Windows devices", async () => {
+    const { adapter, service } = makeHarness();
+    adapter.devices = [
+      bluetoothDevice("Unknown Device", "00:00:00:00:00:01"),
+      bluetoothDevice("Phone", "00:00:00:00:00:02"),
+      bluetoothDevice("Nocturne (Q01S)", DEVICE_ADDRESS),
+      bluetoothDevice("Nocturned", "00:00:00:00:00:03"),
+      bluetoothDevice("nocturne (TEST)", "00:00:00:00:00:04"),
+      bluetoothDevice("NocturneDevice", "00:00:00:00:00:05"),
+    ];
+    await service.initialize();
+
+    const devices = await service.getDevices();
+
+    expect(devices.map(({ name }) => name)).toEqual([
+      "Nocturne (Q01S)",
+      "nocturne (TEST)",
+      "Unknown Device",
+      "Phone",
+      "Nocturned",
+      "NocturneDevice",
+    ]);
+  });
+
+  test("does not mutate the native discovery order while prioritizing Nocturne", () => {
+    const devices = [
+      bluetoothDevice("Phone", "00:00:00:00:00:01"),
+      bluetoothDevice("Nocturne (Q01S)", DEVICE_ADDRESS),
+    ];
+
+    expect(prioritizeWindowsDevices(devices).map(({ name }) => name)).toEqual([
+      "Nocturne (Q01S)",
+      "Phone",
+    ]);
+    expect(devices.map(({ name }) => name)).toEqual([
+      "Phone",
+      "Nocturne (Q01S)",
+    ]);
+  });
+
   test("normalizes generated Windows Bluetooth names", () => {
     expect(bluetoothDisplayName("", DEVICE_ADDRESS)).toBe("Unknown Device");
     expect(bluetoothDisplayName(`Bluetooth ${DEVICE_ADDRESS.toLowerCase()}`, DEVICE_ADDRESS))
@@ -306,6 +397,8 @@ describe("BluetoothService outbound reconnect", () => {
     const { adapter, service, timers } = makeHarness();
     await service.initialize();
     expect(adapter.startDiscoveryCalls).toBe(0);
+    expect(adapter.discoverableValues).toBeEmpty();
+    expect(adapter.pairableValues).toEqual([true]);
 
     await service.startScan();
     expect(adapter.startDiscoveryCalls).toBe(1);
@@ -322,6 +415,18 @@ describe("BluetoothService outbound reconnect", () => {
     expect(timers.pendingCount).toBe(1);
 
     await service.stopScan();
+
+    expect(adapter.stopDiscoveryCalls).toBe(1);
+    expect(timers.pendingCount).toBe(0);
+  });
+
+  test("stops Windows discovery before starting authentication", async () => {
+    const { adapter, service, timers } = makeHarness();
+    await service.initialize();
+    await service.startScan();
+    expect(timers.pendingCount).toBe(1);
+
+    await service.pair(DEVICE_ADDRESS);
 
     expect(adapter.stopDiscoveryCalls).toBe(1);
     expect(timers.pendingCount).toBe(0);

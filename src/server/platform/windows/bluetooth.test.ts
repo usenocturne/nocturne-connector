@@ -4,6 +4,7 @@ import {
   selectWindowsConnectorTarget,
 } from "../../services/bluetooth-service";
 import type { HostBridgeCallOptions, HostBridgeClient } from "../host-bridge";
+import type { PairingPinEvent } from "../../bluetooth/pairing-agent";
 import {
   WindowsBluetoothAdapter,
   WindowsPairingAgent,
@@ -57,6 +58,22 @@ describe("Windows Bluetooth host adapters", () => {
     await service.initialize();
 
     expect(bridge.calls).toContainEqual({ method: "bluetooth.initialize", params: {} });
+    expect(bridge.calls).not.toContainEqual({
+      method: "bluetooth.set_discoverable",
+      params: { enabled: true },
+    });
+    expect(bridge.calls).not.toContainEqual({
+      method: "bluetooth.set_discoverable",
+      params: { enabled: false },
+    });
+    expect(bridge.calls).toContainEqual({
+      method: "bluetooth.set_pairable",
+      params: { enabled: true },
+    });
+    expect(bridge.calls).not.toContainEqual({
+      method: "bluetooth.start_discovery",
+      params: {},
+    });
     expect(bridge.calls).toContainEqual({
       method: "rfcomm.server.register",
       params: {
@@ -217,6 +234,7 @@ describe("Windows Bluetooth host adapters", () => {
       name: "Nocturne (Q01S)",
       pin: "042819",
       type: "bluetooth_pin",
+      confirmationRequired: true,
     });
     expect(displayedPin).toBe("042819");
 
@@ -226,6 +244,38 @@ describe("Windows Bluetooth host adapters", () => {
       method: "bluetooth.pairing.confirm",
       params: {},
     });
+  });
+
+  test("presents display-only PINs and propagates native pairing failures", async () => {
+    const bridge = new FakeHostBridge();
+    const agent = new WindowsPairingAgent(bridge);
+    let displayed: PairingPinEvent | null = null;
+    let pairingError: string | undefined;
+    agent.setOnPinDisplay((event) => {
+      displayed = event;
+    });
+    agent.setOnPairingCancelled((error) => {
+      pairingError = error;
+    });
+    await agent.register();
+
+    bridge.emit("bluetooth.pairing_request", {
+      address: "30:E3:D6:00:B5:5F",
+      name: "Nocturne (Q01S)",
+      pin: "0000",
+      confirmationRequired: false,
+    });
+    expect(displayed).toMatchObject({
+      pin: "0000",
+      confirmationRequired: false,
+    });
+
+    bridge.emit("bluetooth.pairing_cancelled", {
+      address: "30:E3:D6:00:B5:5F",
+      error: "Windows mutual authentication failed",
+    });
+    expect(pairingError).toBe("Windows mutual authentication failed");
+    expect(agent.pendingPin).toBeNull();
   });
 
   test("selects only a paired Nocturne device for Windows recovery", () => {

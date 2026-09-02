@@ -8,6 +8,7 @@ export interface PairingPinEvent {
   name: string;
   pin: string;
   type: "bluetooth_pin";
+  confirmationRequired?: boolean;
 }
 
 export class PairingAgent {
@@ -18,13 +19,13 @@ export class PairingAgent {
   private pendingReject: ((err: any) => void) | null = null;
   private _pendingPin: PairingPinEvent | null = null;
   private onPinDisplay: ((event: PairingPinEvent) => void) | null = null;
-  private onPairingCancelled: (() => void) | null = null;
+  private onPairingCancelled: ((error?: string) => void) | null = null;
 
   setOnPinDisplay(handler: (event: PairingPinEvent) => void): void {
     this.onPinDisplay = handler;
   }
 
-  setOnPairingCancelled(handler: () => void): void {
+  setOnPairingCancelled(handler: (error?: string) => void): void {
     this.onPairingCancelled = handler;
   }
 

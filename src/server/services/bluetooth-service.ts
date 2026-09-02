@@ -65,7 +65,7 @@ export interface RFCOMMClientLike {
 export interface PairingAgentLike {
   readonly pendingPin: PairingPinEvent | null;
   setOnPinDisplay(handler: (event: PairingPinEvent) => void): void;
-  setOnPairingCancelled(handler: () => void): void;
+  setOnPairingCancelled(handler: (error?: string) => void): void;
   register(): Promise<void>;
   confirmPairing(): void;
   rejectPairing(): void;
@@ -200,16 +200,16 @@ export class BluetoothService {
     try {
       await this.adapter.initialize();
       await this.adapter.powerOn();
-      await this.adapter.setDiscoverable(true);
+      if (!this.windowsHost) await this.adapter.setDiscoverable(true);
       await this.adapter.setPairable(true);
 
       this.agent.setOnPinDisplay((event) => {
         log.info(`PIN display: ${event.address} (${event.name}) pin=${event.pin}`);
         this.emit("agent", event);
       });
-      this.agent.setOnPairingCancelled(() => {
+      this.agent.setOnPairingCancelled((error) => {
         log.info("Pairing cancelled by remote device");
-        this.emit("pairingCancelled", {});
+        this.emit("pairingCancelled", error ? { error } : {});
       });
 
       await this.agent.register();
@@ -517,14 +517,24 @@ export class BluetoothService {
         connection.address.toUpperCase(),
       ),
     );
-    return devices.map((device) => ({
+    const normalized = devices.map((device) => ({
       ...device,
       name: bluetoothDisplayName(device.name, device.address),
       connected: connectedAddresses.has(device.address.toUpperCase()),
     }));
+    return prioritizeWindowsDevices(normalized);
   }
 
   async pair(address: string): Promise<void> {
+    if (this.windowsHost) {
+      this.cancelScanTimer();
+      try {
+        await this.adapter.stopDiscovery();
+        this.emit("adapterStatus", await this.adapter.getAdapterStatus());
+      } catch (error) {
+        log.warn(`Unable to stop Windows discovery before pairing: ${error}`);
+      }
+    }
     await this.adapter.pairDevice(address);
   }
 
@@ -617,6 +627,7 @@ export class BluetoothService {
       this.cancelReconnect();
       this.lastOutboundTarget = null;
     }
+
     const hasActiveRoute = Array.from(this.getConnections().values()).some(
       (connection) => connection.address.toUpperCase() === address.toUpperCase(),
     );
@@ -663,9 +674,22 @@ function normalizeAddress(address: string): string {
 export function selectWindowsConnectorTarget(
   devices: BluetoothDevice[],
 ): BluetoothDevice | undefined {
-  return devices.find(
-    (device) => device.paired && /^nocturne(?:\s|$)/i.test(device.name.trim()),
-  );
+  return devices.find((device) => device.paired && isNocturneDeviceName(device.name));
+}
+
+export function prioritizeWindowsDevices<T extends Pick<BluetoothDevice, "name">>(
+  devices: readonly T[],
+): T[] {
+  const nocturne: T[] = [];
+  const others: T[] = [];
+  for (const device of devices) {
+    (isNocturneDeviceName(device.name) ? nocturne : others).push(device);
+  }
+  return [...nocturne, ...others];
+}
+
+function isNocturneDeviceName(name: string): boolean {
+  return /^nocturne(?:\s|$)/i.test(name.trim());
 }
 
 export function createUnavailableBluetoothService(): BluetoothService {

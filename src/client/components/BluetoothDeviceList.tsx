@@ -18,64 +18,83 @@ export function BluetoothDeviceList({
   onUnpair,
   onConnect,
   onDisconnect,
+  busyAddress,
+  busyAction,
 }: {
   devices: Device[];
   onPair: (address: string) => void;
   onUnpair: (address: string) => void;
   onConnect: (address: string) => void;
   onDisconnect?: (address: string) => void;
+  busyAddress?: string | null;
+  busyAction?: "pair" | "unpair";
 }) {
   return (
     <div className="space-y-2">
-      {devices.map((dev) => (
-        <Card key={dev.address}>
-          <CardContent>
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="flex flex-col justify-center">
-                <p className="font-medium text-fg">{dev.name || "Unknown Device"}</p>
-                <div className="mt-1.5 flex gap-2">
-                  {dev.paired && <Badge variant="success">Paired</Badge>}
-                  {dev.connected && <Badge variant="default">Connected</Badge>}
+      {devices.map((dev) => {
+        const busy = busyAddress?.toUpperCase() === dev.address.toUpperCase();
+        return (
+          <Card key={dev.address}>
+            <CardContent>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex flex-col justify-center">
+                  <p className="font-medium text-fg">
+                    {dev.name || "Unknown Device"}
+                  </p>
+                  <div className="mt-1.5 flex gap-2">
+                    {dev.paired && <Badge variant="success">Paired</Badge>}
+                    {dev.connected && <Badge variant="default">Connected</Badge>}
+                  </div>
+                </div>
+                <div className="flex flex-col sm:flex-row justify-center gap-2">
+                  {dev.paired ? (
+                    <>
+                      {dev.connected && onDisconnect ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => onDisconnect(dev.address)}
+                          disabled={busy}
+                        >
+                          Disconnect
+                        </Button>
+                      ) : !dev.connected ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => onConnect(dev.address)}
+                          disabled={busy}
+                        >
+                          Connect
+                        </Button>
+                      ) : null}
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => onUnpair(dev.address)}
+                        disabled={busy}
+                      >
+                        {busy && busyAction === "unpair"
+                          ? "Unpairing..."
+                          : "Unpair"}
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => onPair(dev.address)}
+                        disabled={busy}
+                      >
+                        {busy && busyAction === "pair" ? "Pairing..." : "Pair"}
+                      </Button>
+                  )}
                 </div>
               </div>
-              <div className="flex flex-col sm:flex-row justify-center gap-2">
-                {dev.paired ? (
-                  <>
-                    {dev.connected && onDisconnect ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => onDisconnect(dev.address)}
-                      >
-                        Disconnect
-                      </Button>
-                    ) : !dev.connected ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => onConnect(dev.address)}
-                      >
-                        Connect
-                      </Button>
-                    ) : null}
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => onUnpair(dev.address)}
-                    >
-                      Unpair
-                    </Button>
-                  </>
-                ) : (
-                  <Button variant="outline" size="sm" onClick={() => onPair(dev.address)}>
-                    Pair
-                  </Button>
-                )}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      ))}
+            </CardContent>
+          </Card>
+        );
+      })}
       {devices.length === 0 && (
         <p className="py-4 text-center text-sm text-muted">No devices found</p>
       )}

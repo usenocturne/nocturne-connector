@@ -8,13 +8,14 @@ use std::path::PathBuf;
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 use windows::core::{GUID, HSTRING};
 use windows::Devices::Bluetooth::{BluetoothConnectionStatus, BluetoothDevice, BluetoothLEDevice};
 use windows::Devices::Enumeration::{
     DeviceInformation, DeviceInformationCustomPairing, DeviceInformationUpdate, DevicePairingKinds,
-    DevicePairingRequestedEventArgs, DevicePairingResultStatus, DeviceWatcher,
+    DevicePairingProtectionLevel, DevicePairingRequestedEventArgs, DevicePairingResultStatus,
+    DeviceUnpairingResultStatus, DeviceWatcher,
 };
 use windows::Foundation::TypedEventHandler;
 use windows::Win32::Devices::Bluetooth::{
@@ -26,7 +27,7 @@ use windows::Win32::Devices::Bluetooth::{
     BLUETOOTH_DEVICE_SEARCH_PARAMS, BLUETOOTH_FIND_RADIO_PARAMS, BLUETOOTH_RADIO_INFO,
     BTHPROTO_RFCOMM, NS_BTH, SOCKADDR_BTH, SOL_RFCOMM, SO_BTH_AUTHENTICATE, SO_BTH_ENCRYPT,
 };
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, ERROR_NO_MORE_ITEMS, HANDLE};
 use windows::Win32::Networking::WinSock::{
     accept, bind, closesocket, connect, getsockname, listen, recv, send, setsockopt, socket,
     WSAGetLastError, WSASetServiceW, WSAStartup, CSADDR_INFO, RNRSERVICE_REGISTER, SEND_RECV_FLAGS,
@@ -38,6 +39,8 @@ const RFCOMM_SERVER_CHANNEL: u32 = 1;
 const PROBE_CHANNEL: u32 = 3;
 const PROBE_HOLD: Duration = Duration::from_millis(500);
 const DISCOVERY_REFRESH: Duration = Duration::from_secs(3);
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
+const WINRT_PAIRING_FALLBACK_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 pub struct WindowsBluetoothState {
@@ -49,6 +52,7 @@ struct Inner {
     radio: Option<usize>,
     radio_address: String,
     discovering: bool,
+    discovery_generation: u64,
     servers_started: bool,
     devices: HashMap<String, Value>,
     server_connections: HashMap<String, SOCKET>,
@@ -58,6 +62,7 @@ struct Inner {
     monitor_started: bool,
     winrt_watchers: Vec<DeviceWatcher>,
     winrt_ids: HashMap<String, HashSet<String>>,
+    removing_addresses: HashSet<String>,
     pairing_address: Option<String>,
     pending_pairing: Option<PendingPairing>,
 }
@@ -75,6 +80,7 @@ impl WindowsBluetoothState {
                 radio: None,
                 radio_address: String::new(),
                 discovering: false,
+                discovery_generation: 0,
                 servers_started: false,
                 devices: HashMap::new(),
                 server_connections: HashMap::new(),
@@ -84,6 +90,7 @@ impl WindowsBluetoothState {
                 monitor_started: false,
                 winrt_watchers: Vec::new(),
                 winrt_ids: HashMap::new(),
+                removing_addresses: HashSet::new(),
                 pairing_address: None,
                 pending_pairing: None,
             })),
@@ -175,6 +182,8 @@ impl WindowsBluetoothState {
         }
         match method {
             "bluetooth.initialize" => {
+                self.stop_discovery();
+                self.prune_unpaired_cache();
                 self.ensure_radio()?;
                 Ok(json!({ "status": "ok" }))
             }
@@ -204,10 +213,7 @@ impl WindowsBluetoothState {
                 Ok(json!({ "status": "ok" }))
             }
             "bluetooth.stop_discovery" => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.discovering = false;
-                }
-                self.stop_winrt_discovery();
+                self.stop_discovery();
                 Ok(json!({ "status": "ok" }))
             }
             "bluetooth.pair" => {
@@ -218,12 +224,7 @@ impl WindowsBluetoothState {
             "bluetooth.trust" => Ok(json!({ "status": "ok" })),
             "bluetooth.remove" => {
                 let address = required_string(&params, "address")?;
-                let _ = self.try_remove_winrt(&address)?;
-                self.remove(&address)?;
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.devices.remove(&address);
-                    inner.winrt_ids.remove(&address);
-                }
+                self.unpair_device(&address)?;
                 Ok(json!({ "status": "ok" }))
             }
             "rfcomm.server.register" => {
@@ -339,19 +340,7 @@ impl WindowsBluetoothState {
             .lock()
             .map_err(|_| "Bluetooth state is poisoned".to_string())?;
         drop(inner);
-        let search = BLUETOOTH_DEVICE_SEARCH_PARAMS {
-            dwSize: std::mem::size_of::<BLUETOOTH_DEVICE_SEARCH_PARAMS>() as u32,
-            fReturnAuthenticated: true.into(),
-            fReturnRemembered: true.into(),
-            fReturnUnknown: true.into(),
-            fReturnConnected: true.into(),
-            // Active inquiries are owned by the WinRT DeviceWatcher below;
-            // keeping this legacy snapshot passive avoids two concurrent
-            // inquiries competing for the same adapter.
-            fIssueInquiry: false.into(),
-            cTimeoutMultiplier: 2,
-            hRadio: HANDLE::default(),
-        };
+        let search = passive_device_search_params();
         let mut info = BLUETOOTH_DEVICE_INFO {
             dwSize: std::mem::size_of::<BLUETOOTH_DEVICE_INFO>() as u32,
             ..Default::default()
@@ -401,7 +390,26 @@ impl WindowsBluetoothState {
         self.enumerate_devices()
     }
 
-    fn start_winrt_discovery(&self) {
+    fn prune_unpaired_cache(&self) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.devices.retain(|_, device| {
+                device
+                    .get("paired")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                    || device
+                        .get("connected")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+            });
+            let retained = inner.devices.keys().cloned().collect::<HashSet<_>>();
+            inner
+                .winrt_ids
+                .retain(|address, _| retained.contains(address));
+        }
+    }
+
+    fn start_winrt_discovery(&self, generation: u64) {
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         let selectors = [
             (
@@ -483,7 +491,7 @@ impl WindowsBluetoothState {
             .inner
             .lock()
             .map(|mut inner| {
-                if inner.discovering {
+                if inner.discovering && inner.discovery_generation == generation {
                     inner
                         .winrt_watchers
                         .extend(pending_watchers.take().unwrap_or_default());
@@ -500,14 +508,37 @@ impl WindowsBluetoothState {
         }
     }
 
-    fn stop_winrt_discovery(&self) {
+    fn stop_discovery(&self) {
         let watchers = self
             .inner
             .lock()
-            .map(|mut inner| std::mem::take(&mut inner.winrt_watchers))
+            .map(|mut inner| {
+                inner.discovering = false;
+                inner.discovery_generation = next_generation(inner.discovery_generation);
+                std::mem::take(&mut inner.winrt_watchers)
+            })
             .unwrap_or_default();
         for watcher in watchers {
             let _ = watcher.Stop();
+        }
+    }
+
+    fn finish_discovery(&self, generation: u64) {
+        let (bridge, watchers) = match self.inner.lock() {
+            Ok(mut inner) if inner.discovery_generation == generation => {
+                inner.discovering = false;
+                (
+                    inner.bridge.clone(),
+                    std::mem::take(&mut inner.winrt_watchers),
+                )
+            }
+            _ => return,
+        };
+        for watcher in watchers {
+            let _ = watcher.Stop();
+        }
+        if let Some(bridge) = bridge {
+            bridge.emit("bluetooth.adapter_status", self.status());
         }
     }
 
@@ -518,6 +549,12 @@ impl WindowsBluetoothState {
         let id = information.Id().ok().map(|id| id.to_string());
         let (bridge, topic, device) = match self.inner.lock() {
             Ok(mut inner) => {
+                if inner
+                    .removing_addresses
+                    .contains(&address.to_ascii_uppercase())
+                {
+                    return;
+                }
                 let existed = inner.devices.contains_key(&address);
                 let device = merge_device(inner.devices.get(&address), device);
                 let changed = inner.devices.get(&address) != Some(&device);
@@ -621,11 +658,14 @@ impl WindowsBluetoothState {
                     .to_string(),
             );
         }
-        if unsafe { BluetoothEnableDiscovery(Some(radio), enabled) }.0 == 0
-            && unsafe { BluetoothIsDiscoverable(Some(radio)) }.as_bool() != enabled
-        {
+        let _ = unsafe { BluetoothEnableDiscovery(Some(radio), enabled) };
+        if unsafe { BluetoothIsDiscoverable(Some(radio)) }.as_bool() != enabled {
+            let _ = unsafe { BluetoothEnableDiscovery(None, enabled) };
+        }
+        if unsafe { BluetoothIsDiscoverable(Some(radio)) }.as_bool() != enabled {
             return Err("Windows refused the Bluetooth discoverability change".to_string());
         }
+        log_native(&format!("Windows Bluetooth discoverable={enabled}"));
         Ok(())
     }
 
@@ -659,12 +699,12 @@ impl WindowsBluetoothState {
     }
 
     fn start_discovery(&self) {
-        let should_start = self
+        let generation = self
             .inner
             .lock()
             .map(|mut inner| {
                 if inner.discovering {
-                    false
+                    None
                 } else {
                     inner.devices.retain(|_, device| {
                         device
@@ -677,23 +717,25 @@ impl WindowsBluetoothState {
                         .winrt_ids
                         .retain(|address, _| remembered.contains(address));
                     inner.discovering = true;
-                    true
+                    inner.discovery_generation = next_generation(inner.discovery_generation);
+                    Some(inner.discovery_generation)
                 }
             })
-            .unwrap_or(false);
-        if !should_start {
+            .unwrap_or(None);
+        let Some(generation) = generation else {
             return;
-        }
+        };
         let state = self.clone();
         thread::spawn(move || {
-            state.start_winrt_discovery();
+            let deadline = Instant::now() + DISCOVERY_TIMEOUT;
+            state.start_winrt_discovery(generation);
             loop {
-                let discovering = state
+                let current = state
                     .inner
                     .lock()
-                    .map(|inner| inner.discovering)
+                    .map(|inner| inner.discovering && inner.discovery_generation == generation)
                     .unwrap_or(false);
-                if !discovering {
+                if !current || Instant::now() >= deadline {
                     break;
                 }
                 let previous = state
@@ -719,9 +761,11 @@ impl WindowsBluetoothState {
                         }
                     }
                 }
-                thread::sleep(DISCOVERY_REFRESH);
+                thread::sleep(
+                    DISCOVERY_REFRESH.min(deadline.saturating_duration_since(Instant::now())),
+                );
             }
-            state.stop_winrt_discovery();
+            state.finish_discovery(generation);
         });
     }
 
@@ -734,8 +778,18 @@ impl WindowsBluetoothState {
             if let Some(active) = &inner.pairing_address {
                 return Err(format!("Bluetooth pairing is already active for {active}"));
             }
+            if inner
+                .removing_addresses
+                .contains(&address.to_ascii_uppercase())
+            {
+                return Err(format!("Bluetooth unpairing is still active for {address}"));
+            }
             inner.pairing_address = Some(address.clone());
         }
+        self.stop_discovery();
+        log_native(&format!(
+            "Bluetooth pairing starting for {address} after discovery stopped"
+        ));
         let state = self.clone();
         std::mem::drop(tokio::task::spawn_blocking(move || {
             let result = state.pair_blocking(&address, bridge.clone());
@@ -768,6 +822,10 @@ impl WindowsBluetoothState {
         if self.try_pair_winrt(address, bridge)? {
             return Ok(());
         }
+        log_native(&format!(
+            "Falling back to the Win32 Bluetooth authentication wizard for {address}"
+        ));
+        thread::sleep(WINRT_PAIRING_FALLBACK_DELAY);
         self.ensure_radio()?;
         let mut info = self.find_device(address)?;
         let code = unsafe {
@@ -779,7 +837,7 @@ impl WindowsBluetoothState {
                 AUTHENTICATION_REQUIREMENTS(0),
             )
         };
-        if code != 0 {
+        if code != 0 && code != ERROR_NO_MORE_ITEMS.0 {
             return Err(format!(
                 "Bluetooth pairing failed with Windows error {code}"
             ));
@@ -802,7 +860,7 @@ impl WindowsBluetoothState {
     }
 
     fn try_pair_winrt(&self, address: &str, bridge: BridgeServer) -> Result<bool, String> {
-        let id = self
+        let cached_id = self
             .inner
             .lock()
             .map_err(|_| "Bluetooth state is poisoned".to_string())?
@@ -819,15 +877,57 @@ impl WindowsBluetoothState {
                     })
                     .flatten()
             });
-        let Some(id) = id else { return Ok(false) };
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        let id = windows::core::HSTRING::from(id);
-        let information = DeviceInformation::CreateFromIdAsync(&id)
-            .and_then(|operation| operation.get())
-            .map_err(|error| format!("Unable to open Bluetooth device {address}: {error}"))?;
+        let cached_information = cached_id.as_ref().and_then(|id| {
+            let id = windows::core::HSTRING::from(id);
+            DeviceInformation::CreateFromIdAsync(&id)
+                .and_then(|operation| operation.get())
+                .ok()
+        });
+        let information = if let Some(information) = cached_information {
+            information
+        } else {
+            let target = parse_address(address)?;
+            let bluetooth_address = unsafe { target.Anonymous.ullLong };
+            let device = match BluetoothDevice::FromBluetoothAddressAsync(bluetooth_address)
+                .and_then(|operation| operation.get())
+            {
+                Ok(device) => device,
+                Err(error) => {
+                    log_native(&format!(
+                        "Unable to resolve a fresh WinRT pairing endpoint for {address}: {error}"
+                    ));
+                    return Ok(false);
+                }
+            };
+            device.DeviceInformation().map_err(|error| {
+                format!("Unable to read fresh Bluetooth endpoint for {address}: {error}")
+            })?
+        };
+        let endpoint_id = information
+            .Id()
+            .map(|id| id.to_string())
+            .unwrap_or_else(|_| cached_id.unwrap_or_else(|| "<unknown>".to_string()));
+        if endpoint_id != "<unknown>" {
+            if let Ok(mut inner) = self.inner.lock() {
+                inner
+                    .winrt_ids
+                    .entry(address.to_string())
+                    .or_default()
+                    .insert(endpoint_id.clone());
+            }
+        }
+        log_native(&format!(
+            "Using WinRT Bluetooth pairing endpoint for {address}: {endpoint_id}"
+        ));
         let pairing = information
             .Pairing()
             .map_err(|error| format!("Unable to read Bluetooth pairing state: {error}"))?;
+        log_native(&format!(
+            "WinRT pairing endpoint for {address}: can_pair={} is_paired={}",
+            pairing.CanPair().unwrap_or(false),
+            pairing.IsPaired().unwrap_or(false),
+        ));
         if pairing
             .IsPaired()
             .map_err(|error| format!("Unable to read Bluetooth pairing state: {error}"))?
@@ -852,8 +952,30 @@ impl WindowsBluetoothState {
                 return Ok(());
             };
             let kind = args.PairingKind()?;
+            let pin = args.Pin().ok().map(|value| value.to_string());
+            log_native(&format!(
+                "Windows pairing ceremony for {}: kind={} pin={}",
+                event_address,
+                kind.0,
+                pin.as_deref().unwrap_or("<none>"),
+            ));
             if kind == DevicePairingKinds::ProvidePin {
                 return args.AcceptWithPin(&HSTRING::from("0000"));
+            }
+            if kind == DevicePairingKinds::DisplayPin {
+                let accept_result = args.Accept();
+                if let Some(pin) = pin {
+                    event_bridge.emit(
+                        "bluetooth.pairing_request",
+                        json!({
+                            "address": event_address,
+                            "name": event_name,
+                            "pin": pin,
+                            "confirmationRequired": false,
+                        }),
+                    );
+                }
+                return accept_result;
             }
             if kind == DevicePairingKinds::ConfirmPinMatch {
                 let pin = args.Pin()?.to_string();
@@ -881,6 +1003,7 @@ impl WindowsBluetoothState {
                             "address": event_address,
                             "name": event_name,
                             "pin": pin,
+                            "confirmationRequired": true,
                         }),
                     );
                 }
@@ -913,11 +1036,10 @@ impl WindowsBluetoothState {
         let token = custom
             .PairingRequested(&requested)
             .map_err(|error| format!("Unable to register custom Bluetooth pairing: {error}"))?;
-        let kinds = DevicePairingKinds::ConfirmOnly
-            | DevicePairingKinds::DisplayPin
-            | DevicePairingKinds::ProvidePin
-            | DevicePairingKinds::ConfirmPinMatch;
-        let operation = custom.PairAsync(kinds);
+        let operation = custom.PairWithProtectionLevelAsync(
+            supported_pairing_kinds(),
+            DevicePairingProtectionLevel::None,
+        );
         let result = operation
             .and_then(|operation| operation.get())
             .map_err(|error| format!("Bluetooth pairing failed: {error}"));
@@ -929,6 +1051,13 @@ impl WindowsBluetoothState {
         {
             DevicePairingResultStatus::Paired | DevicePairingResultStatus::AlreadyPaired => {
                 Ok(true)
+            }
+            status if should_retry_pairing_with_win32(status) => {
+                log_native(&format!(
+                    "WinRT pairing returned {status:?} ({}); retrying with Win32 authentication",
+                    status.0,
+                ));
+                Ok(false)
             }
             status => Err(format!(
                 "Bluetooth pairing failed with Windows status {status:?} ({})",
@@ -971,6 +1100,80 @@ impl WindowsBluetoothState {
         Ok(())
     }
 
+    fn unpair_device(&self, address: &str) -> Result<(), String> {
+        let normalized = address.to_ascii_uppercase();
+        {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| "Bluetooth state is poisoned".to_string())?;
+            inner.removing_addresses.insert(normalized.clone());
+        }
+
+        let winrt_error = self.try_remove_winrt(address).err();
+        let legacy_error = self.remove(address).err();
+        let verification_error = self.wait_for_bond_removal(address).err();
+
+        if let Ok(mut inner) = self.inner.lock() {
+            inner
+                .devices
+                .retain(|known_address, _| !known_address.eq_ignore_ascii_case(address));
+            inner
+                .winrt_ids
+                .retain(|known_address, _| !known_address.eq_ignore_ascii_case(address));
+            inner.removing_addresses.remove(&normalized);
+        }
+
+        if legacy_error.is_none() && verification_error.is_none() {
+            if let Some(error) = winrt_error {
+                log_native(&format!(
+                    "WinRT unpairing for {address} reported {error}; Win32 removal verified the bond is gone"
+                ));
+            }
+            log_native(&format!("Bluetooth bond removal verified for {address}"));
+            return Ok(());
+        }
+
+        let mut errors = Vec::new();
+        if let Some(error) = winrt_error {
+            errors.push(format!("WinRT: {error}"));
+        }
+        if let Some(error) = legacy_error {
+            errors.push(format!("Win32: {error}"));
+        }
+        if let Some(error) = verification_error {
+            errors.push(format!("verification: {error}"));
+        }
+        Err(format!(
+            "Bluetooth unpairing failed for {address}: {}",
+            errors.join("; ")
+        ))
+    }
+
+    fn wait_for_bond_removal(&self, address: &str) -> Result<(), String> {
+        let target = parse_address(address)?;
+        for _ in 0..20 {
+            let mut info = BLUETOOTH_DEVICE_INFO {
+                dwSize: std::mem::size_of::<BLUETOOTH_DEVICE_INFO>() as u32,
+                Address: target,
+                ..Default::default()
+            };
+            let result = unsafe { BluetoothGetDeviceInfo(None, &mut info) };
+            if result == 1168
+                || (result == 0 && info.fAuthenticated.0 == 0 && info.fRemembered.0 == 0)
+            {
+                return Ok(());
+            }
+            if result != 0 {
+                return Err(format!(
+                    "Unable to verify Bluetooth device removal (Windows error {result})"
+                ));
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        Err("Windows still reports the device as paired after 2 seconds".to_string())
+    }
+
     fn try_remove_winrt(&self, address: &str) -> Result<bool, String> {
         let ids = self
             .inner
@@ -989,6 +1192,7 @@ impl WindowsBluetoothState {
         }
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         let mut removed = false;
+        let mut errors = Vec::new();
         for id in ids {
             let id = windows::core::HSTRING::from(id);
             let information = match DeviceInformation::CreateFromIdAsync(&id)
@@ -999,28 +1203,52 @@ impl WindowsBluetoothState {
                     log_native(&format!(
                         "Skipping unavailable Bluetooth identity for {address}: {error}"
                     ));
+                    errors.push(format!("unavailable identity: {error}"));
                     continue;
                 }
             };
-            let pairing = information
-                .Pairing()
-                .map_err(|error| format!("Unable to read Bluetooth pairing state: {error}"))?;
-            if !pairing
-                .IsPaired()
-                .map_err(|error| format!("Unable to read Bluetooth pairing state: {error}"))?
-            {
+            let pairing = match information.Pairing() {
+                Ok(pairing) => pairing,
+                Err(error) => {
+                    errors.push(format!("pairing state unavailable: {error}"));
+                    continue;
+                }
+            };
+            let is_paired = match pairing.IsPaired() {
+                Ok(is_paired) => is_paired,
+                Err(error) => {
+                    errors.push(format!("paired state unavailable: {error}"));
+                    continue;
+                }
+            };
+            if !is_paired {
                 continue;
             }
-            let result = pairing
-                .UnpairAsync()
-                .and_then(|operation| operation.get())
-                .map_err(|error| format!("Bluetooth unpairing failed: {error}"))?;
-            if !result.Status().map(|status| status.0 == 0).unwrap_or(false) {
-                return Err("Bluetooth unpairing failed".to_string());
+            let result = match pairing.UnpairAsync().and_then(|operation| operation.get()) {
+                Ok(result) => result,
+                Err(error) => {
+                    errors.push(format!("identity unpair failed: {error}"));
+                    continue;
+                }
+            };
+            let status = match result.Status() {
+                Ok(status) => status,
+                Err(error) => {
+                    errors.push(format!("unpair result unavailable: {error}"));
+                    continue;
+                }
+            };
+            if unpair_status_is_success(status) {
+                removed = true;
+            } else if status != DeviceUnpairingResultStatus::OperationAlreadyInProgress {
+                errors.push(format!("identity unpair returned status {status:?}"));
             }
-            removed = true;
         }
-        Ok(removed)
+        if errors.is_empty() {
+            Ok(removed)
+        } else {
+            Err(errors.join("; "))
+        }
     }
 
     fn start_servers(&self, bridge: BridgeServer) -> Result<(), String> {
@@ -1278,9 +1506,6 @@ fn monitor_loop(state: WindowsBluetoothState) {
         if was_powered != is_powered || radio_changed || previous_address != current_address {
             state.reset_routes();
             if is_powered && radio_changed {
-                if let Err(error) = state.set_discoverable(true) {
-                    eprintln!("Unable to restore Bluetooth discoverability: {error}");
-                }
                 if let Err(error) = state.set_pairable(true) {
                     eprintln!("Unable to restore Bluetooth pairability: {error}");
                 }
@@ -1804,6 +2029,38 @@ fn device_name_is_unknown(name: &str, address: &str) -> bool {
         || normalized_name == format!("bluetooth {}", normalized_address.replace(':', "-"))
 }
 
+fn passive_device_search_params() -> BLUETOOTH_DEVICE_SEARCH_PARAMS {
+    BLUETOOTH_DEVICE_SEARCH_PARAMS {
+        dwSize: std::mem::size_of::<BLUETOOTH_DEVICE_SEARCH_PARAMS>() as u32,
+        fReturnAuthenticated: true.into(),
+        fReturnRemembered: true.into(),
+        fReturnUnknown: false.into(),
+        fReturnConnected: true.into(),
+        fIssueInquiry: false.into(),
+        cTimeoutMultiplier: 2,
+        hRadio: HANDLE::default(),
+    }
+}
+
+fn next_generation(current: u64) -> u64 {
+    current.wrapping_add(1)
+}
+
+fn should_retry_pairing_with_win32(status: DevicePairingResultStatus) -> bool {
+    status == DevicePairingResultStatus::Failed
+}
+
+fn unpair_status_is_success(status: DeviceUnpairingResultStatus) -> bool {
+    status == DeviceUnpairingResultStatus::Unpaired
+        || status == DeviceUnpairingResultStatus::AlreadyUnpaired
+}
+
+fn supported_pairing_kinds() -> DevicePairingKinds {
+    DevicePairingKinds::ConfirmOnly
+        | DevicePairingKinds::ProvidePin
+        | DevicePairingKinds::ConfirmPinMatch
+}
+
 fn resolve_winrt_device(
     information: &DeviceInformation,
     low_energy: bool,
@@ -1917,8 +2174,14 @@ fn bytes_param(params: &Value, key: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::merge_device;
+    use super::{
+        merge_device, next_generation, passive_device_search_params,
+        should_retry_pairing_with_win32, supported_pairing_kinds, unpair_status_is_success,
+    };
     use serde_json::json;
+    use windows::Devices::Enumeration::{
+        DevicePairingKinds, DevicePairingResultStatus, DeviceUnpairingResultStatus,
+    };
 
     #[test]
     fn device_merge_preserves_classic_name_and_pairing_in_either_order() {
@@ -1945,5 +2208,51 @@ mod tests {
             assert_eq!(merged["trusted"], true);
             assert_eq!(merged["connected"], true);
         }
+    }
+
+    #[test]
+    fn passive_snapshots_never_issue_inquiry_or_return_unknown_devices() {
+        let search = passive_device_search_params();
+        assert!(!search.fIssueInquiry.as_bool());
+        assert!(!search.fReturnUnknown.as_bool());
+        assert!(search.fReturnAuthenticated.as_bool());
+        assert!(search.fReturnRemembered.as_bool());
+        assert!(search.fReturnConnected.as_bool());
+    }
+
+    #[test]
+    fn discovery_generations_wrap_without_reusing_the_active_value() {
+        assert_eq!(next_generation(41), 42);
+        assert_eq!(next_generation(u64::MAX), 0);
+    }
+
+    #[test]
+    fn generic_winrt_pairing_failure_uses_the_win32_fallback() {
+        assert!(should_retry_pairing_with_win32(
+            DevicePairingResultStatus::Failed
+        ));
+        assert!(!should_retry_pairing_with_win32(
+            DevicePairingResultStatus::AuthenticationFailure
+        ));
+    }
+
+    #[test]
+    fn legacy_car_thing_pairing_never_advertises_display_pin() {
+        let kinds = supported_pairing_kinds();
+        assert_ne!(kinds.0 & DevicePairingKinds::ProvidePin.0, 0);
+        assert_eq!(kinds.0 & DevicePairingKinds::DisplayPin.0, 0);
+    }
+
+    #[test]
+    fn unpairing_accepts_already_unpaired_as_idempotent_success() {
+        assert!(unpair_status_is_success(
+            DeviceUnpairingResultStatus::Unpaired
+        ));
+        assert!(unpair_status_is_success(
+            DeviceUnpairingResultStatus::AlreadyUnpaired
+        ));
+        assert!(!unpair_status_is_success(
+            DeviceUnpairingResultStatus::Failed
+        ));
     }
 }

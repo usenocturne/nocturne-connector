@@ -26,6 +26,11 @@ interface HostAddressEvent {
 interface HostPairingEvent extends HostAddressEvent {
   name?: string;
   pin: string;
+  confirmationRequired?: boolean;
+}
+
+interface HostPairingCancelledEvent {
+  error?: string;
 }
 
 interface HostServerConnectionEvent extends HostAddressEvent {
@@ -158,7 +163,7 @@ export class WindowsBluetoothAdapter implements BluetoothAdapterLike {
 export class WindowsPairingAgent implements PairingAgentLike {
   private _pendingPin: PairingPinEvent | null = null;
   private onPinDisplay: ((event: PairingPinEvent) => void) | null = null;
-  private onPairingCancelled: (() => void) | null = null;
+  private onPairingCancelled: ((error?: string) => void) | null = null;
   private subscriptions: (() => void)[] = [];
 
   constructor(private readonly bridge: HostBridgeClient) {}
@@ -171,7 +176,7 @@ export class WindowsPairingAgent implements PairingAgentLike {
     this.onPinDisplay = handler;
   }
 
-  setOnPairingCancelled(handler: () => void): void {
+  setOnPairingCancelled(handler: (error?: string) => void): void {
     this.onPairingCancelled = handler;
   }
 
@@ -185,12 +190,18 @@ export class WindowsPairingAgent implements PairingAgentLike {
           name: event.name ?? "",
           pin: event.pin,
           type: "bluetooth_pin",
+          confirmationRequired: event.confirmationRequired !== false,
         };
         this.onPinDisplay?.(this._pendingPin);
       }),
-      this.bridge.onEvent("bluetooth.pairing_cancelled", () => {
+      this.bridge.onEvent<HostPairingCancelledEvent>("bluetooth.pairing_cancelled", (event) => {
         this._pendingPin = null;
-        this.onPairingCancelled?.();
+        this.onPairingCancelled?.(
+          typeof event?.error === "string" ? event.error : undefined,
+        );
+      }),
+      this.bridge.onEvent("bluetooth.pair_complete", () => {
+        this._pendingPin = null;
       }),
     );
   }
