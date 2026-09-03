@@ -50,6 +50,7 @@ Section "Nocturne Connector" SecMain
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Nocturne Connector" "DisplayName" "Nocturne Connector"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Nocturne Connector" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Nocturne Connector" "DisplayIcon" "$INSTDIR\Nocturne.Connector.exe,0"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Nocturne Connector" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Nocturne Connector" "Publisher" "Nocturne"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Nocturne Connector" "UninstallString" "$INSTDIR\Uninstall.exe"
