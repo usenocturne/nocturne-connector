@@ -1,6 +1,6 @@
 [package]
 name = "nocturne-connector-windows"
-version = "2.1.1"
+version = "2.1.2"
 description = "Windows tray host for Nocturne Connector"
 authors = ["Nocturne"]
 edition = "2021"
