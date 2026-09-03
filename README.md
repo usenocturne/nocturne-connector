@@ -26,7 +26,7 @@
 ## Prerequisites
 
 - Car Thing with Nocturne 4.1.0 or later installed
-- Raspberry Pi with networking, or a Mac with macOS 15.0 or newer.
+- Raspberry Pi with networking, a Mac with macOS 15.0 or newer, or a computer with Windows 10 or newer.
   - Pi 1 and 2 are not supported due to the lack of onboard Wi-Fi
   - Pi Zero 1 (W) is not supported due to the old architecture
 - SD card (Raspberry Pi)
@@ -55,6 +55,16 @@
 1. Download the macOS disk image from the [latest release](https://github.com/usenocturne/nocturne-connector/releases/latest).
 2. Open the disk image and drag Nocturne Connector into your Applications folder.
 3. Open Nocturne Connector from your Applications folder.
+4. Finish setting up Nocturne Connector by following the steps on screen.
+
+</details>
+
+<details>
+<summary><img src="https://usenocturne.com/favicon.ico" height="14" style="vertical-align: middle;"> Windows 10+ </summary>
+
+1. Download the setup .exe from the [latest release](https://github.com/usenocturne/nocturne-connector/releases/latest).
+2. Run the installer.
+3. Start Nocturne Connector from the Start menu.
 4. Finish setting up Nocturne Connector by following the steps on screen.
 
 </details>
