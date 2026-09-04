@@ -20,6 +20,20 @@ fn connector_window_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/?connector-platform=windows")
 }
 
+fn is_local_connector_url(url: &tauri::Url) -> bool {
+    url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1") | Some("localhost"))
+}
+
+fn should_open_in_default_browser(url: &tauri::Url) -> bool {
+    !is_local_connector_url(url) && matches!(url.scheme(), "http" | "https")
+}
+
+fn open_in_default_browser(url: &tauri::Url) {
+    if let Err(error) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>) {
+        eprintln!("Unable to open external URL in the default browser: {error}");
+    }
+}
+
 #[derive(Clone)]
 pub struct HostState {
     bridge: BridgeServer,
@@ -211,18 +225,20 @@ impl HostState {
         .min_inner_size(640.0, 480.0)
         .resizable(true)
         .on_navigation(|url| {
-            let is_local_connector = url.scheme() == "http"
-                && matches!(url.host_str(), Some("127.0.0.1") | Some("localhost"));
-            if is_local_connector {
+            if is_local_connector_url(url) {
                 return true;
             }
-            if matches!(url.scheme(), "http" | "https") {
-                if let Err(error) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>) {
-                    eprintln!("Unable to open external URL in the default browser: {error}");
-                }
+            if should_open_in_default_browser(url) {
+                open_in_default_browser(url);
                 return false;
             }
             true
+        })
+        .on_new_window(|url, _features| {
+            if should_open_in_default_browser(&url) {
+                open_in_default_browser(&url);
+            }
+            tauri::webview::NewWindowResponse::Deny
         })
         .build()
         .map_err(|error| error.to_string())?;
@@ -232,7 +248,7 @@ impl HostState {
 
 #[cfg(test)]
 mod tests {
-    use super::connector_window_url;
+    use super::{connector_window_url, is_local_connector_url, should_open_in_default_browser};
 
     #[test]
     fn connector_window_url_marks_only_the_native_windows_ui() {
@@ -240,5 +256,15 @@ mod tests {
             connector_window_url(52_225),
             "http://127.0.0.1:52225/?connector-platform=windows"
         );
+    }
+
+    #[test]
+    fn external_http_links_open_in_the_default_browser() {
+        let external = tauri::Url::parse("https://usenocturne.com/login").unwrap();
+        let local = tauri::Url::parse("http://127.0.0.1:52225/").unwrap();
+
+        assert!(should_open_in_default_browser(&external));
+        assert!(!should_open_in_default_browser(&local));
+        assert!(is_local_connector_url(&local));
     }
 }
