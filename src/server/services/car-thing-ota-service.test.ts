@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "crypto";
-import { mkdtemp, rm } from "fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "fs/promises";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import {
   carThingOtaVersionLanes,
   CarThingOTAService,
@@ -30,6 +38,7 @@ describe("CarThingOTAService", () => {
   test("checks, verifies, resumes, and range-serves a v2 image update", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "nocturne-connector-ota-"));
     let manifestQuery = "";
+    let artifactRequests = 0;
     server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
@@ -67,20 +76,17 @@ describe("CarThingOTAService", () => {
           });
         }
         if (url.pathname.endsWith("/nocturne.swu")) {
+          artifactRequests++;
           return new Response(primaryBytes);
         }
         if (url.pathname.endsWith("/system.img.zck")) {
-          const header = request.headers.get("range");
-          const match = /^bytes=(\d+)-(\d+)$/.exec(header ?? "");
-          if (!match) return new Response("missing range", { status: 400 });
-          const start = Number(match[1]);
-          const end = Number(match[2]);
-          return new Response(rangeBytes.subarray(start, end + 1), {
-            status: 206,
-            headers: {
-              "content-range": `bytes ${start}-${end}/${rangeBytes.length}`,
-            },
-          });
+          artifactRequests++;
+          if (request.headers.has("range")) {
+            return new Response("ranges are not expected during prefetch", {
+              status: 400,
+            });
+          }
+          return new Response(rangeBytes);
         }
         return new Response("not found", { status: 404 });
       },
@@ -111,10 +117,22 @@ describe("CarThingOTAService", () => {
     const update = check.update;
     if (!update) throw new Error("expected update");
     const progress: number[] = [];
-    await service.preparePrimaryArtifact(update, (downloaded) => {
+    await service.prepareUpdateArtifacts(update, (downloaded) => {
       progress.push(downloaded);
     });
-    expect(progress.at(-1)).toBe(primaryBytes.length);
+    expect(progress.at(-1)).toBe(primaryBytes.length + rangeBytes.length);
+    expect(artifactRequests).toBe(2);
+    expect(await service.verifyPreparedUpdate(update)).toBe(true);
+    expect(
+      await readFile(
+        join(
+          stateDir,
+          "artifacts",
+          update.updateId,
+          update.rangeAssets[0]!.name,
+        ),
+      ),
+    ).toEqual(rangeBytes);
     expect(await service.readPrimaryChunk(update, 7, 3)).toEqual(
       primaryBytes.subarray(7, 10),
     );
@@ -135,21 +153,52 @@ describe("CarThingOTAService", () => {
 
     await service.rememberActiveUpdate(update);
     expect(await service.activeUpdate()).toEqual(update);
+    server.stop(true);
+    server = null;
     expect(
-      await service.fetchAssetRange(update, update.rangeAssets[0]!, 5, 12),
+      await service.readAssetRange(update, update.rangeAssets[0]!, 5, 12),
     ).toEqual(rangeBytes.subarray(5, 17));
+    await service.prepareUpdateArtifacts(update);
+    expect(artifactRequests).toBe(2);
+
+    const abandoned = new AbortController();
+    abandoned.abort();
+    await expect(
+      service.readAssetRange(
+        update,
+        update.rangeAssets[0]!,
+        0,
+        4,
+        abandoned.signal,
+      ),
+    ).rejects.toHaveProperty("name", "AbortError");
 
     await service.clearActiveUpdate(true);
     expect(await service.activeUpdate()).toBeNull();
     await expect(service.readPrimaryChunk(update, 0, 1)).rejects.toThrow();
+    await expect(
+      service.readAssetRange(update, update.rangeAssets[0]!, 0, 1),
+    ).rejects.toThrow();
   });
 
-  test("rejects a range server that ignores the requested range", async () => {
+  test("rejects and removes a corrupt prefetched secondary asset", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "nocturne-connector-ota-"));
+    let corrupt = true;
     server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
-      fetch: () => new Response(rangeBytes),
+      fetch(request) {
+        const url = new URL(request.url);
+        if (url.pathname.endsWith("/nocturne.swu")) {
+          return new Response(primaryBytes);
+        }
+        if (url.pathname.endsWith("/system.img.zck")) {
+          return new Response(
+            corrupt ? Buffer.alloc(rangeBytes.length, 0) : rangeBytes,
+          );
+        }
+        return new Response("not found", { status: 404 });
+      },
     });
     const service = new CarThingOTAService({ stateDir });
     const update = {
@@ -173,8 +222,17 @@ describe("CarThingOTAService", () => {
     };
 
     await expect(
-      service.fetchAssetRange(update, update.rangeAssets[0]!, 0, 4),
-    ).rejects.toThrow("HTTP 200");
+      service.prepareUpdateArtifacts(update),
+    ).rejects.toThrow("system.img.zck hash mismatch");
+    expect((await readdir(stateDir)).some((name) => name.endsWith(".part")))
+      .toBe(false);
+
+    corrupt = false;
+    await service.prepareUpdateArtifacts(update);
+    expect(await service.verifyPreparedUpdate(update)).toBe(true);
+    expect(
+      await service.readAssetRange(update, update.rangeAssets[0]!, 0, 4),
+    ).toEqual(rangeBytes.subarray(0, 4));
   });
 
   test("accepts a bandaid manifest with one primary tar asset", async () => {
@@ -222,6 +280,63 @@ describe("CarThingOTAService", () => {
     expect(check.update?.kind).toBe("bandaid");
     expect(check.update?.primaryAsset).toBe("nocturne-bandaid.tar.zst");
     expect(check.update?.rangeAssets).toEqual([]);
+  });
+
+  test("keeps terminal cleanup inside the dedicated OTA cache", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "nocturne-connector-state-"));
+    const otaStateDir = join(stateDir, "car-thing-ota");
+    const sibling = join(stateDir, "auth-session.json");
+    const artifact = join(
+      otaStateDir,
+      "artifacts",
+      "release-4.2.0",
+      "system.img.zck",
+    );
+    await writeFile(sibling, "preserve me");
+    await mkdir(dirname(artifact), { recursive: true });
+    await writeFile(artifact, rangeBytes);
+    const service = new CarThingOTAService({ stateDir: otaStateDir });
+
+    await service.clearActiveUpdate(true);
+
+    expect(await readFile(sibling, "utf8")).toBe("preserve me");
+    await expect(stat(otaStateDir)).rejects.toHaveProperty("code", "ENOENT");
+  });
+
+  test("rejects asset names that exceed one safe wire component", async () => {
+    server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        const origin = new URL(request.url).origin;
+        const oversizedName = `a${"b".repeat(128)}`;
+        return Response.json({
+          manifest_version: 2,
+          channel: "stable",
+          update_available: true,
+          update: {
+            update_id: "release-4.2.0",
+            version: "4.2.0",
+            kind: "image",
+            expected_sha256: sha256(primaryBytes),
+            expected_size: primaryBytes.length,
+            update_url_base: `${origin}/v2/artifacts/release-4.2.0`,
+            assets: [
+              {
+                name: oversizedName,
+                size: primaryBytes.length,
+                sha256: sha256(primaryBytes),
+              },
+            ],
+          },
+        });
+      },
+    });
+    const service = new CarThingOTAService({ serverUrl: server.url.origin });
+
+    await expect(service.checkUpdate("4.1.0", "stable")).rejects.toThrow(
+      "Invalid OTA asset name",
+    );
   });
 
   test("old device versions populate both OTA version lanes", () => {

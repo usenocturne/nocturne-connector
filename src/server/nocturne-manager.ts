@@ -69,6 +69,7 @@ export interface NocturneManagerDependencies {
   sessionProtector?: SessionProtector;
   spotifySkipPreferenceStore?: SpotifySkipPreferenceStore;
   systemMediaPreferenceStore?: SystemMediaPreferenceStore;
+  carThingOtaService?: CarThingOTAService;
 }
 
 export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDelegate {
@@ -78,7 +79,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   private spotifyCommands: SpotifyCommandDispatcher;
   private spotifyWebSocket: SpotifyWebSocketService;
   readonly otaService = new OTAService();
-  readonly carThingOtaService = new CarThingOTAService();
+  readonly carThingOtaService: CarThingOTAService;
   readonly bluetoothService: BluetoothService;
   readonly setupStateService = new SetupStateService();
   readonly systemMediaService: SystemMediaService | null;
@@ -93,7 +94,9 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   private connectorUpdateCheckPromise: Promise<ConnectorUpdateCheckResponse> | null = null;
   private activeCarThingUpdate: CarThingAvailableUpdate | null = null;
   private carThingInstallPromise: Promise<void> | null = null;
+  private carThingResumePromise: Promise<void> | null = null;
   private carThingRangeTasks = new Map<string, AbortController>();
+  private carThingOtaGeneration = 0;
   private pendingHostVolumePercent: number | null = null;
   private hostVolumeReportTask: Promise<void> | null = null;
   private systemMediaModeTask: Promise<void> = Promise.resolve();
@@ -102,6 +105,8 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   constructor(dependencies: NocturneManagerDependencies = {}) {
     this.platform = dependencies.platform ?? process.platform;
     this.bluetoothService = dependencies.bluetoothService ?? new BluetoothService();
+    this.carThingOtaService =
+      dependencies.carThingOtaService ?? new CarThingOTAService();
     this.authService = new AuthService({
       sessionProtector: dependencies.sessionProtector,
     });
@@ -303,6 +308,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
       this.recordConnectionAnalytics(deviceInfo);
 
       await this.sendAppReady();
+      void this.resumePreparedCarThingOta(connectionID);
       void this.checkConnectorUpdateForConnection(connectionID);
     } catch (err) {
       log.error(`Initial ping failed for ${connectionID}: ${err}`);
@@ -674,7 +680,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
     } else if (topic === "ota.request_check") {
       void this.handleCarThingOtaCheck(data);
     } else if (topic === "ota.request_install") {
-      if (this.carThingInstallPromise) {
+      if (this.carThingInstallPromise || this.carThingResumePromise) {
         log.info("Ignoring duplicate OTA install request while one is active");
         return;
       }
@@ -698,6 +704,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
         this.carThingRangeTasks.delete(requestId);
       }
     } else if (topic === "ota.complete") {
+      this.carThingOtaGeneration++;
       for (const controller of this.carThingRangeTasks.values()) controller.abort();
       this.carThingRangeTasks.clear();
       this.activeCarThingUpdate = null;
@@ -705,8 +712,13 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
         .clearActiveUpdate(true)
         .catch((err) => log.warn(`Failed to clean completed OTA state: ${err}`));
     } else if (topic === "ota.error") {
+      this.carThingOtaGeneration++;
       for (const controller of this.carThingRangeTasks.values()) controller.abort();
       this.carThingRangeTasks.clear();
+      this.activeCarThingUpdate = null;
+      void this.carThingOtaService
+        .clearActiveUpdate(true)
+        .catch((err) => log.warn(`Failed to clean failed OTA state: ${err}`));
     }
   }
 
@@ -757,7 +769,9 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
     const versions = this.carThingOtaVersions(params);
     if (!versions) throw new Error("Device version is unavailable");
 
+    const generation = this.carThingOtaGeneration;
     let beganUpdateId: string | null = null;
+    let rememberedUpdate = false;
     try {
       const check = await this.carThingOtaService.checkUpdate(
         versions.currentVersion,
@@ -797,7 +811,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
 
       let lastReportedPercent = -1;
       let lastReportedAt = 0;
-      await this.carThingOtaService.preparePrimaryArtifact(
+      await this.carThingOtaService.prepareUpdateArtifacts(
         update,
         async (downloaded, total) => {
           const percent = total > 0 ? Math.floor((downloaded / total) * 100) : 0;
@@ -821,27 +835,41 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
           }
         },
       );
+      if (generation !== this.carThingOtaGeneration) {
+        throw new Error("OTA session ended while assets were downloading");
+      }
 
       await this.carThingOtaService.rememberActiveUpdate(update);
+      rememberedUpdate = true;
       this.activeCarThingUpdate = update;
-      await client.sendEvent("ota.package_ready", {
-        updateId: update.updateId,
-        version: update.version,
-        size: update.expectedSize,
-        expectedSha256: update.expectedSha256,
-        resumeFromOffset,
-        maxTransferChunkSize: MAX_OTA_TRANSFER_WINDOW_BYTES,
-        supportsChunkedTransferResponse: true,
-        transferDataEncoding: "msgpack_binary",
-      });
+      if (generation !== this.carThingOtaGeneration) {
+        await this.carThingOtaService.clearActiveUpdate(true);
+        this.activeCarThingUpdate = null;
+        rememberedUpdate = false;
+        throw new Error("OTA session ended before the package became ready");
+      }
+      await this.sendCarThingPackageReady(client, update, resumeFromOffset);
     } catch (err) {
       const message = errorMessage(err);
       log.error(`Car Thing OTA install failed: ${message}`);
       if (beganUpdateId) {
         try {
           await client.call("ota.abandon", { updateId: beganUpdateId });
+          if (rememberedUpdate) {
+            await this.carThingOtaService.clearActiveUpdate(false);
+            this.activeCarThingUpdate = null;
+            rememberedUpdate = false;
+          }
         } catch (abandonError) {
           log.warn(`Failed to abandon OTA ${beganUpdateId}: ${errorMessage(abandonError)}`);
+        }
+      }
+      if (rememberedUpdate) {
+        const replacement = Array.from(this.connections.entries()).find(
+          ([, connection]) => connection.rpcClient !== client,
+        );
+        if (replacement) {
+          await this.resumePreparedCarThingOta(replacement[0], true);
         }
       }
       throw err;
@@ -896,7 +924,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
           const offset = range.start + cursor;
           failurePartIndex = partIndex;
           failureOffset = offset;
-          const bytes = await this.carThingOtaService.fetchAssetRange(
+          const bytes = await this.carThingOtaService.readAssetRange(
             update,
             asset,
             offset,
@@ -913,7 +941,6 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
             bytes,
             last,
           }, 60_000);
-          if (!last) await Bun.sleep(15);
         }
       }
     } catch (err) {
@@ -943,6 +970,94 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
         this.carThingRangeTasks.delete(requestId);
       }
     }
+  }
+
+  private resumePreparedCarThingOta(
+    connectionID: string,
+    allowActiveInstall = false,
+  ): Promise<void> {
+    if (this.carThingInstallPromise && !allowActiveInstall) {
+      return Promise.resolve();
+    }
+    if (!this.activeCarThingUpdate) return Promise.resolve();
+    if (this.carThingResumePromise) return this.carThingResumePromise;
+
+    const resume = this.performPreparedCarThingOtaResume(connectionID)
+      .finally(() => {
+        if (this.carThingResumePromise === resume) {
+          this.carThingResumePromise = null;
+        }
+      });
+    this.carThingResumePromise = resume;
+    return resume;
+  }
+
+  private async performPreparedCarThingOtaResume(
+    connectionID: string,
+  ): Promise<void> {
+    const connection = this.connections.get(connectionID);
+    if (!connection) return;
+    const generation = this.carThingOtaGeneration;
+
+    try {
+      const update =
+        this.activeCarThingUpdate ??
+        (await this.carThingOtaService.activeUpdate());
+      if (!update) return;
+      if (!(await this.carThingOtaService.verifyPreparedUpdate(update))) {
+        log.warn(`Discarding incomplete cached OTA ${update.updateId}`);
+        await this.carThingOtaService.clearActiveUpdate(true);
+        this.activeCarThingUpdate = null;
+        return;
+      }
+      if (
+        generation !== this.carThingOtaGeneration ||
+        this.connections.get(connectionID) !== connection
+      ) return;
+
+      this.activeCarThingUpdate = update;
+      const begin = await connection.rpcClient.call("ota.begin", {
+        kind: update.kind,
+        updateId: update.updateId,
+        updateUrlBase: update.updateUrlBase,
+        expectedSha256: update.expectedSha256,
+        expectedSize: update.expectedSize,
+      });
+      const resumeFromOffset = integerParam(
+        asUnknownRecord(begin)?.resumeFromOffset ??
+          asUnknownRecord(begin)?.resume_from_offset,
+        0,
+      );
+      if (
+        generation !== this.carThingOtaGeneration ||
+        this.connections.get(connectionID) !== connection
+      ) return;
+      await this.sendCarThingPackageReady(
+        connection.rpcClient,
+        update,
+        resumeFromOffset,
+      );
+      log.info(`Rebound cached OTA ${update.updateId} after reconnect`);
+    } catch (err) {
+      log.warn(`Failed to rebind cached Car Thing OTA: ${errorMessage(err)}`);
+    }
+  }
+
+  private async sendCarThingPackageReady(
+    client: RPCClient,
+    update: CarThingAvailableUpdate,
+    resumeFromOffset: number,
+  ): Promise<void> {
+    await client.sendEvent("ota.package_ready", {
+      updateId: update.updateId,
+      version: update.version,
+      size: update.expectedSize,
+      expectedSha256: update.expectedSha256,
+      resumeFromOffset,
+      maxTransferChunkSize: MAX_OTA_TRANSFER_WINDOW_BYTES,
+      supportsChunkedTransferResponse: true,
+      transferDataEncoding: "msgpack_binary",
+    });
   }
 
   private async sendCarThingCheckResult(

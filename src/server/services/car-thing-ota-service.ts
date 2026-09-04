@@ -7,9 +7,8 @@ import {
   rename,
   rm,
   stat,
-  writeFile,
 } from "fs/promises";
-import { join } from "path";
+import { dirname, join } from "path";
 import { CONNECTOR_STATE_DIR, OTA_SERVER_URL } from "../config";
 import { requireOtaTransferWindow } from "./ota-transfer";
 
@@ -62,6 +61,7 @@ interface CarThingOTAServiceOptions {
 const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
 const ASSET_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const UPDATE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const MAX_ASSET_NAME_LENGTH = 128;
 const MAX_WIRE_SIZE = 0xffff_ffff;
 
 export class CarThingOTAService {
@@ -115,80 +115,37 @@ export class CarThingOTAService {
     return { available: true, channel: responseChannel, update };
   }
 
-  async preparePrimaryArtifact(
+  async prepareUpdateArtifacts(
     update: CarThingAvailableUpdate,
     onProgress?: (downloaded: number, total: number) => void | Promise<void>,
-  ): Promise<string> {
-    await mkdir(this.stateDir, { recursive: true });
-    const destination = this.primaryPath(update);
-    if (await this.verifyFile(destination, update.expectedSize, update.expectedSha256)) {
-      await onProgress?.(update.expectedSize, update.expectedSize);
-      return destination;
-    }
+  ): Promise<void> {
+    const assets = updateAssets(update);
+    const total = assets.reduce((sum, asset) => sum + asset.size, 0);
+    let completed = 0;
 
-    const partial = `${destination}.part`;
-    await rm(partial, { force: true });
-    const response = await this.fetchImpl(
-      `${update.updateUrlBase.replace(/\/$/, "")}/${encodeURIComponent(update.primaryAsset)}`,
-      {
-        headers: { Accept: "application/octet-stream" },
-        signal: AbortSignal.timeout(30 * 60_000),
-      },
-    );
-    if (response.status !== 200 || !response.body) {
-      throw new Error(`OTA artifact returned HTTP ${response.status}`);
+    for (const asset of assets) {
+      await this.prepareArtifact(update, asset, async (downloaded) => {
+        await onProgress?.(completed + downloaded, total);
+      });
+      completed += asset.size;
     }
+  }
 
-    const file = await open(partial, "w", 0o600);
-    const reader = response.body.getReader();
-    const hasher = createHash("sha256");
-    let downloaded = 0;
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = Buffer.from(value);
-        downloaded += chunk.length;
-        if (downloaded > update.expectedSize) {
-          throw new Error(
-            `OTA artifact exceeded expected size ${update.expectedSize}`,
-          );
-        }
-        hasher.update(chunk);
-        await writeAll(file, chunk);
-        await onProgress?.(downloaded, update.expectedSize);
+  async verifyPreparedUpdate(update: CarThingAvailableUpdate): Promise<boolean> {
+    for (const asset of updateAssets(update)) {
+      if (!(await this.verifyFile(
+        this.assetPath(update, asset),
+        asset.size,
+        asset.sha256,
+      ))) {
+        return false;
       }
-      await file.sync();
-    } catch (error) {
-      await reader.cancel().catch(() => undefined);
-      await rm(partial, { force: true });
-      throw error;
-    } finally {
-      await file.close();
     }
-
-    const digest = hasher.digest("hex");
-    if (downloaded !== update.expectedSize) {
-      await rm(partial, { force: true });
-      throw new Error(
-        `OTA artifact size mismatch: expected ${update.expectedSize}, got ${downloaded}`,
-      );
-    }
-    if (digest !== update.expectedSha256) {
-      await rm(partial, { force: true });
-      throw new Error(
-        `OTA artifact hash mismatch: expected ${update.expectedSha256}, got ${digest}`,
-      );
-    }
-
-    await rm(destination, { force: true });
-    await rename(partial, destination);
-    return destination;
+    return true;
   }
 
   async rememberActiveUpdate(update: CarThingAvailableUpdate): Promise<void> {
-    await mkdir(this.stateDir, { recursive: true });
-    const next = `${this.sessionPath()}.next`;
+    await mkdir(this.stateDir, { recursive: true, mode: 0o700 });
     const persisted = {
       version: update.version,
       channel: update.channel,
@@ -208,8 +165,10 @@ export class CarThingOTAService {
       requires_reflash: update.requiresReflash,
       flashthing_zip_url: update.flashthingZipUrl,
     };
-    await writeFile(next, `${JSON.stringify(persisted)}\n`, { mode: 0o600 });
-    await rename(next, this.sessionPath());
+    await writeFileAtomically(
+      this.sessionPath(),
+      Buffer.from(`${JSON.stringify(persisted)}\n`),
+    );
   }
 
   async activeUpdate(): Promise<CarThingAvailableUpdate | null> {
@@ -231,8 +190,11 @@ export class CarThingOTAService {
       throw new Error(`Invalid OTA offset ${offset}`);
     }
     requireOtaTransferWindow(size);
-    const path = this.primaryPath(update);
+    const path = this.assetPath(update, primaryAsset(update));
     const metadata = await stat(path);
+    if (!metadata.isFile() || metadata.size !== update.expectedSize) {
+      throw new Error(`Cached OTA primary asset ${update.primaryAsset} is unavailable`);
+    }
     if (offset >= metadata.size) {
       throw new Error(`OTA offset ${offset} is outside ${metadata.size}-byte artifact`);
     }
@@ -252,7 +214,7 @@ export class CarThingOTAService {
     }
   }
 
-  async fetchAssetRange(
+  async readAssetRange(
     update: CarThingAvailableUpdate,
     asset: CarThingOtaAsset,
     start: number,
@@ -268,44 +230,59 @@ export class CarThingOTAService {
     ) {
       throw new Error(`Invalid range ${start}+${length} for ${asset.name}`);
     }
-    const end = start + length - 1;
-    const timeout = AbortSignal.timeout(30_000);
-    const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
-    const response = await this.fetchImpl(
-      `${update.updateUrlBase.replace(/\/$/, "")}/${encodeURIComponent(asset.name)}`,
-      {
-        headers: { Range: `bytes=${start}-${end}` },
-        signal: requestSignal,
-      },
-    );
-    if (response.status !== 206) {
-      throw new Error(`OTA range returned HTTP ${response.status}`);
+    requireOtaTransferWindow(length);
+    if (signal?.aborted) throw abortError();
+
+    const path = this.assetPath(update, asset);
+    const metadata = await stat(path);
+    if (!metadata.isFile() || metadata.size !== asset.size) {
+      throw new Error(`Cached OTA asset ${asset.name} is unavailable`);
     }
-    const expectedContentRange = `bytes ${start}-${end}/${asset.size}`;
-    if (response.headers.get("content-range") !== expectedContentRange) {
-      throw new Error(
-        `OTA range Content-Range mismatch: expected ${expectedContentRange}`,
-      );
+
+    const bytes = Buffer.alloc(length);
+    const file = await open(path, "r");
+    try {
+      let read = 0;
+      while (read < length) {
+        if (signal?.aborted) throw abortError();
+        const result = await file.read(
+          bytes,
+          read,
+          length - read,
+          start + read,
+        );
+        if (result.bytesRead === 0) break;
+        read += result.bytesRead;
+      }
+      if (read !== length) {
+        throw new Error(
+          `Cached OTA asset ${asset.name} returned ${read} bytes, expected ${length}`,
+        );
+      }
+      return bytes;
+    } finally {
+      await file.close();
     }
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length !== length) {
-      throw new Error(`OTA range returned ${bytes.length} bytes, expected ${length}`);
-    }
-    return bytes;
   }
 
   async clearActiveUpdate(deleteArtifact: boolean): Promise<void> {
-    const active = await this.activeUpdate().catch(() => null);
+    if (deleteArtifact) {
+      await rm(this.stateDir, { recursive: true, force: true });
+      return;
+    }
     await rm(this.sessionPath(), { force: true });
     await rm(`${this.sessionPath()}.next`, { force: true });
-    if (deleteArtifact && active) {
-      await rm(this.primaryPath(active), { force: true });
-      await rm(`${this.primaryPath(active)}.part`, { force: true });
-    }
   }
 
-  private primaryPath(update: CarThingAvailableUpdate): string {
-    return join(this.stateDir, `${update.updateId}-${update.primaryAsset}`);
+  private assetPath(
+    update: CarThingAvailableUpdate,
+    asset: CarThingOtaAsset,
+  ): string {
+    return join(this.artifactDirectory(update), asset.name);
+  }
+
+  private artifactDirectory(update: CarThingAvailableUpdate): string {
+    return join(this.stateDir, "artifacts", update.updateId);
   }
 
   private sessionPath(): string {
@@ -334,6 +311,79 @@ export class CarThingOTAService {
       stream.on("end", resolve);
     });
     return hash.digest("hex") === expectedSha256;
+  }
+
+  private async prepareArtifact(
+    update: CarThingAvailableUpdate,
+    asset: CarThingOtaAsset,
+    onProgress?: (downloaded: number, total: number) => void | Promise<void>,
+  ): Promise<void> {
+    const artifactDirectory = this.artifactDirectory(update);
+    await mkdir(artifactDirectory, { recursive: true, mode: 0o700 });
+    const destination = this.assetPath(update, asset);
+    if (await this.verifyFile(destination, asset.size, asset.sha256)) {
+      await onProgress?.(asset.size, asset.size);
+      return;
+    }
+
+    const partial = `${destination}.part`;
+    await rm(partial, { force: true });
+    const response = await this.fetchImpl(
+      `${update.updateUrlBase.replace(/\/$/, "")}/${encodeURIComponent(asset.name)}`,
+      {
+        headers: { Accept: "application/octet-stream" },
+        signal: AbortSignal.timeout(30 * 60_000),
+      },
+    );
+    if (response.status !== 200 || !response.body) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`OTA asset ${asset.name} returned HTTP ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const hasher = createHash("sha256");
+    let downloaded = 0;
+    try {
+      const file = await open(partial, "w", 0o600);
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = Buffer.from(value);
+          downloaded += chunk.length;
+          if (downloaded > asset.size) {
+            throw new Error(
+              `OTA asset ${asset.name} exceeded expected size ${asset.size}`,
+            );
+          }
+          hasher.update(chunk);
+          await writeAll(file, chunk);
+          await onProgress?.(downloaded, asset.size);
+        }
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+
+      const digest = hasher.digest("hex");
+      if (downloaded !== asset.size) {
+        throw new Error(
+          `OTA asset ${asset.name} size mismatch: expected ${asset.size}, got ${downloaded}`,
+        );
+      }
+      if (digest !== asset.sha256) {
+        throw new Error(
+          `OTA asset ${asset.name} hash mismatch: expected ${asset.sha256}, got ${digest}`,
+        );
+      }
+
+      await replaceFile(partial, destination);
+      await syncDirectory(artifactDirectory);
+    } catch (error) {
+      await reader.cancel().catch(() => undefined);
+      await rm(partial, { force: true });
+      throw error;
+    }
   }
 }
 
@@ -382,6 +432,9 @@ function parseAvailableUpdate(
     parseAsset(asRecord(value, "OTA asset")),
   );
   if (assets.length === 0) throw new Error("OTA manifest has no assets");
+  if (new Set(assets.map((asset) => asset.name)).size !== assets.length) {
+    throw new Error("OTA manifest contains duplicate asset names");
+  }
   const primary = assets[0];
   if (primary.size !== expectedSize || primary.sha256 !== expectedSha256) {
     throw new Error("OTA primary asset does not match expected size and SHA-256");
@@ -409,7 +462,11 @@ function parseAvailableUpdate(
 
 function parseAsset(raw: Record<string, unknown>): CarThingOtaAsset {
   const name = requiredString(raw.name, "asset name");
-  if (!ASSET_NAME_PATTERN.test(name) || name.includes("..")) {
+  if (
+    name.length > MAX_ASSET_NAME_LENGTH ||
+    !ASSET_NAME_PATTERN.test(name) ||
+    name.includes("..")
+  ) {
     throw new Error(`Invalid OTA asset name ${name}`);
   }
   const size = requiredNumber(raw.size, `${name} size`);
@@ -468,6 +525,62 @@ function isNotFound(error: unknown): boolean {
     "code" in error &&
     (error as Error & { code?: string }).code === "ENOENT"
   );
+}
+
+function primaryAsset(update: CarThingAvailableUpdate): CarThingOtaAsset {
+  return {
+    name: update.primaryAsset,
+    size: update.expectedSize,
+    sha256: update.expectedSha256,
+  };
+}
+
+function updateAssets(update: CarThingAvailableUpdate): CarThingOtaAsset[] {
+  return [primaryAsset(update), ...update.rangeAssets];
+}
+
+function abortError(): Error {
+  return new DOMException("The OTA range request was abandoned", "AbortError");
+}
+
+async function writeFileAtomically(path: string, bytes: Buffer): Promise<void> {
+  const next = `${path}.next`;
+  try {
+    const file = await open(next, "w", 0o600);
+    try {
+      await writeAll(file, bytes);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+  } catch (error) {
+    await rm(next, { force: true });
+    throw error;
+  }
+  await replaceFile(next, path);
+  await syncDirectory(dirname(path));
+}
+
+async function replaceFile(source: string, destination: string): Promise<void> {
+  try {
+    await rename(source, destination);
+  } catch (error) {
+    if (process.platform !== "win32") throw error;
+    await rm(destination, { force: true });
+    await rename(source, destination);
+  }
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  let directory;
+  try {
+    directory = await open(path, "r");
+    await directory.sync();
+  } catch (error) {
+    if (process.platform !== "win32") throw error;
+  } finally {
+    await directory?.close();
+  }
 }
 
 async function writeAll(
