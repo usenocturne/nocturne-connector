@@ -47,7 +47,7 @@ try {
           hideConsole: true,
           title: "Nocturne Connector Server",
           publisher: "Nocturne",
-          version: "2.1.2.0",
+          version: "2.1.3.0",
           description: "Nocturne Connector background server",
         },
       },

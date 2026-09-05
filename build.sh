@@ -4,7 +4,7 @@ set -e
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Image build config
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-: "${CONNECTOR_IMAGE_VERSION:="v2.1.2"}"
+: "${CONNECTOR_IMAGE_VERSION:="v2.1.3"}"
 
 : "${UBOOT_PROJ_ID:="32838267"}"
 : "${UBOOT_PACKAGE:=""}"

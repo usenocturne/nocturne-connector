@@ -109,7 +109,7 @@ $nsisPath = if ($nsis.PSObject.Properties.Name -contains "Source") {
   $nsis.FullName
 }
 
-$version = if ($env:NOCTURNE_CONNECTOR_VERSION) { $env:NOCTURNE_CONNECTOR_VERSION } else { "2.1.2" }
+$version = if ($env:NOCTURNE_CONNECTOR_VERSION) { $env:NOCTURNE_CONNECTOR_VERSION } else { "2.1.3" }
 $output = Join-Path $bundlesRoot "nocturne-connector_${version}_windows_setup.exe"
 
 function Sign-Artifact([string]$path) {
