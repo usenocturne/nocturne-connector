@@ -792,7 +792,16 @@ impl WindowsBluetoothState {
         ));
         let state = self.clone();
         std::mem::drop(tokio::task::spawn_blocking(move || {
+            let started = Instant::now();
             let result = state.pair_blocking(&address, bridge.clone());
+            log_native(&format!(
+                "Bluetooth pairing finished for {address} after {} ms: {}",
+                started.elapsed().as_millis(),
+                match &result {
+                    Ok(()) => "success",
+                    Err(error) => error.as_str(),
+                },
+            ));
             let pending = state.inner.lock().ok().and_then(|mut inner| {
                 if inner.pairing_address.as_deref() == Some(address.as_str()) {
                     inner.pairing_address = None;
@@ -1045,10 +1054,15 @@ impl WindowsBluetoothState {
             .map_err(|error| format!("Bluetooth pairing failed: {error}"));
         let _ = custom.RemovePairingRequested(token);
         let result = result?;
-        match result
+        let status = result
             .Status()
-            .map_err(|error| format!("Unable to read Bluetooth pairing result: {error}"))?
-        {
+            .map_err(|error| format!("Unable to read Bluetooth pairing result: {error}"))?;
+        log_native(&format!(
+            "WinRT pairing result for {address}: {} ({})",
+            pairing_status_name(status),
+            status.0,
+        ));
+        match status {
             DevicePairingResultStatus::Paired | DevicePairingResultStatus::AlreadyPaired => {
                 Ok(true)
             }
@@ -1059,10 +1073,7 @@ impl WindowsBluetoothState {
                 ));
                 Ok(false)
             }
-            status => Err(format!(
-                "Bluetooth pairing failed with Windows status {status:?} ({})",
-                status.0,
-            )),
+            status => Err(pairing_status_error(status)),
         }
     }
 
@@ -2050,6 +2061,43 @@ fn should_retry_pairing_with_win32(status: DevicePairingResultStatus) -> bool {
     status == DevicePairingResultStatus::Failed
 }
 
+fn pairing_status_name(status: DevicePairingResultStatus) -> &'static str {
+    match status {
+        DevicePairingResultStatus::Paired => "Paired",
+        DevicePairingResultStatus::NotReadyToPair => "NotReadyToPair",
+        DevicePairingResultStatus::NotPaired => "NotPaired",
+        DevicePairingResultStatus::AlreadyPaired => "AlreadyPaired",
+        DevicePairingResultStatus::ConnectionRejected => "ConnectionRejected",
+        DevicePairingResultStatus::TooManyConnections => "TooManyConnections",
+        DevicePairingResultStatus::HardwareFailure => "HardwareFailure",
+        DevicePairingResultStatus::AuthenticationTimeout => "AuthenticationTimeout",
+        DevicePairingResultStatus::AuthenticationNotAllowed => "AuthenticationNotAllowed",
+        DevicePairingResultStatus::AuthenticationFailure => "AuthenticationFailure",
+        DevicePairingResultStatus::NoSupportedProfiles => "NoSupportedProfiles",
+        DevicePairingResultStatus::ProtectionLevelCouldNotBeMet => "ProtectionLevelCouldNotBeMet",
+        DevicePairingResultStatus::AccessDenied => "AccessDenied",
+        DevicePairingResultStatus::InvalidCeremonyData => "InvalidCeremonyData",
+        DevicePairingResultStatus::PairingCanceled => "PairingCanceled",
+        DevicePairingResultStatus::OperationAlreadyInProgress => "OperationAlreadyInProgress",
+        DevicePairingResultStatus::RequiredHandlerNotRegistered => "RequiredHandlerNotRegistered",
+        DevicePairingResultStatus::RejectedByHandler => "RejectedByHandler",
+        DevicePairingResultStatus::RemoteDeviceHasAssociation => "RemoteDeviceHasAssociation",
+        DevicePairingResultStatus::Failed => "Failed",
+        _ => "Unknown",
+    }
+}
+
+fn pairing_status_error(status: DevicePairingResultStatus) -> String {
+    if status == DevicePairingResultStatus::AuthenticationTimeout {
+        return "Bluetooth pairing timed out. Open the Bluetooth device list or Add Phone screen on your Car Thing, keep it nearby, complete any Windows pairing prompt, then try again. (AuthenticationTimeout, Windows status 7)".to_string();
+    }
+    format!(
+        "Bluetooth pairing failed with Windows status {} ({})",
+        pairing_status_name(status),
+        status.0,
+    )
+}
+
 fn unpair_status_is_success(status: DeviceUnpairingResultStatus) -> bool {
     status == DeviceUnpairingResultStatus::Unpaired
         || status == DeviceUnpairingResultStatus::AlreadyUnpaired
@@ -2175,8 +2223,9 @@ fn bytes_param(params: &Value, key: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        merge_device, next_generation, passive_device_search_params,
-        should_retry_pairing_with_win32, supported_pairing_kinds, unpair_status_is_success,
+        merge_device, next_generation, pairing_status_error, pairing_status_name,
+        passive_device_search_params, should_retry_pairing_with_win32, supported_pairing_kinds,
+        unpair_status_is_success,
     };
     use serde_json::json;
     use windows::Devices::Enumeration::{
@@ -2234,6 +2283,22 @@ mod tests {
         assert!(!should_retry_pairing_with_win32(
             DevicePairingResultStatus::AuthenticationFailure
         ));
+    }
+
+    #[test]
+    fn authentication_timeout_explains_recovery_without_retrying_automatically() {
+        let status = DevicePairingResultStatus(7);
+        assert_eq!(pairing_status_name(status), "AuthenticationTimeout");
+        let message = pairing_status_error(status);
+        assert!(message.contains("pairing timed out"));
+        assert!(message.contains("Bluetooth device list or Add Phone"));
+        assert!(message.contains("complete any Windows pairing prompt"));
+        assert!(message.contains("Windows status 7"));
+        assert!(!should_retry_pairing_with_win32(status));
+        assert_eq!(
+            pairing_status_error(DevicePairingResultStatus(99)),
+            "Bluetooth pairing failed with Windows status Unknown (99)",
+        );
     }
 
     #[test]
