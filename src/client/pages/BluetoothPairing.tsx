@@ -36,6 +36,7 @@ interface PairingPinEvent {
   pin: string;
   type: "bluetooth_pin";
   confirmationRequired?: boolean;
+  requestId?: string;
 }
 
 export function BluetoothPairing() {
@@ -45,6 +46,8 @@ export function BluetoothPairing() {
   const [connections, setConnections] = useState<any[]>([]);
   const [scanning, setScanning] = useState(false);
   const [pinEvent, setPinEvent] = useState<PairingPinEvent | null>(null);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [submittingDecision, setSubmittingDecision] = useState(false);
   const [pairError, setPairError] = useState<string | null>(null);
   const [pairingAddress, setPairingAddress] = useState<string | null>(null);
   const [unpairingAddress, setUnpairingAddress] = useState<string | null>(null);
@@ -52,6 +55,7 @@ export function BluetoothPairing() {
   const windowsScanGenerationRef = useRef(0);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => { mountedRef.current = false; };
   }, []);
 
@@ -67,6 +71,7 @@ export function BluetoothPairing() {
 
   useEvent<PairingPinEvent>("bluetooth.agent", useCallback((data) => {
     if (data.type === "bluetooth_pin") {
+      setDecisionError(null);
       setPinEvent(data);
     }
   }, []));
@@ -85,20 +90,34 @@ export function BluetoothPairing() {
     setPairError(null);
   }, []));
 
-  const handleConfirm = async () => {
-    if (pinEvent?.confirmationRequired === false) {
-      setPinEvent(null);
-      return;
-    }
-    setPinEvent(null);
-    try { await post("/api/bluetooth/pairing-confirm"); } catch {}
-    refresh();
-  };
+  useEffect(() => {
+    if (!isWindows) return;
+    let active = true;
+    get("/api/bluetooth/pairing-request").then((result) => {
+      if (active && result.pending) setPinEvent((current) => current ?? result.request);
+    }).catch((error) => {
+      if (active) setPairError(`Unable to restore pairing request: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    return () => { active = false; };
+  }, [isWindows]);
 
-  const handleReject = async () => {
-    setPinEvent(null);
-    try { await post("/api/bluetooth/pairing-reject"); } catch {}
-    refresh();
+  const submitDecision = async (accepted: boolean) => {
+    if (!pinEvent || submittingDecision) return;
+    if (accepted && pinEvent.confirmationRequired === false) { setPinEvent(null); return; }
+    const requestId = pinEvent.requestId;
+    setSubmittingDecision(true);
+    setDecisionError(null);
+    try {
+      await post(`/api/bluetooth/pairing-${accepted ? "confirm" : "reject"}`, isWindows ? {
+        requestId,
+      } : undefined);
+      setPinEvent((current) => current?.requestId === requestId ? null : current);
+      await refresh();
+    } catch (error) {
+      setDecisionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSubmittingDecision(false);
+    }
   };
 
   const startScan = async () => {
@@ -311,11 +330,12 @@ export function BluetoothPairing() {
               {pinEvent?.pin ?? ""}
             </span>
           </div>
+          {decisionError && <p role="alert" className="text-red-500">{decisionError}</p>}
           <AlertDialogFooter>
             {pinEvent?.confirmationRequired !== false && (
-              <AlertDialogCancel onClick={handleReject}>Reject</AlertDialogCancel>
+              <AlertDialogCancel disabled={submittingDecision} onClick={(event) => { event.preventDefault(); void submitDecision(false); }}>Reject</AlertDialogCancel>
             )}
-            <AlertDialogAction onClick={handleConfirm}>
+            <AlertDialogAction disabled={submittingDecision} onClick={(event) => { event.preventDefault(); void submitDecision(true); }}>
               {pinEvent?.confirmationRequired === false ? "Done" : "Confirm"}
             </AlertDialogAction>
           </AlertDialogFooter>

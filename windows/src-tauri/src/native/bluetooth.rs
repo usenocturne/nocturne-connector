@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
-use windows::core::{GUID, HSTRING};
+use windows::core::GUID;
 use windows::Devices::Bluetooth::{BluetoothConnectionStatus, BluetoothDevice, BluetoothLEDevice};
 use windows::Devices::Enumeration::{
     DeviceInformation, DeviceInformationCustomPairing, DeviceInformationUpdate, DevicePairingKinds,
@@ -19,15 +19,15 @@ use windows::Devices::Enumeration::{
 };
 use windows::Foundation::TypedEventHandler;
 use windows::Win32::Devices::Bluetooth::{
-    BluetoothAuthenticateDeviceEx, BluetoothEnableDiscovery, BluetoothEnableIncomingConnections,
-    BluetoothFindDeviceClose, BluetoothFindFirstDevice, BluetoothFindFirstRadio,
-    BluetoothFindNextDevice, BluetoothFindRadioClose, BluetoothGetDeviceInfo,
-    BluetoothGetRadioInfo, BluetoothIsConnectable, BluetoothIsDiscoverable, BluetoothRemoveDevice,
-    AF_BTH, AUTHENTICATION_REQUIREMENTS, BLUETOOTH_ADDRESS, BLUETOOTH_DEVICE_INFO,
-    BLUETOOTH_DEVICE_SEARCH_PARAMS, BLUETOOTH_FIND_RADIO_PARAMS, BLUETOOTH_RADIO_INFO,
-    BTHPROTO_RFCOMM, NS_BTH, SOCKADDR_BTH, SOL_RFCOMM, SO_BTH_AUTHENTICATE, SO_BTH_ENCRYPT,
+    BluetoothEnableDiscovery, BluetoothEnableIncomingConnections, BluetoothFindDeviceClose,
+    BluetoothFindFirstDevice, BluetoothFindFirstRadio, BluetoothFindNextDevice,
+    BluetoothFindRadioClose, BluetoothGetDeviceInfo, BluetoothGetRadioInfo, BluetoothIsConnectable,
+    BluetoothIsDiscoverable, BluetoothRemoveDevice, AF_BTH, BLUETOOTH_ADDRESS,
+    BLUETOOTH_DEVICE_INFO, BLUETOOTH_DEVICE_SEARCH_PARAMS, BLUETOOTH_FIND_RADIO_PARAMS,
+    BLUETOOTH_RADIO_INFO, BTHPROTO_RFCOMM, NS_BTH, SOCKADDR_BTH, SOL_RFCOMM, SO_BTH_AUTHENTICATE,
+    SO_BTH_ENCRYPT,
 };
-use windows::Win32::Foundation::{CloseHandle, ERROR_NO_MORE_ITEMS, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Networking::WinSock::{
     accept, bind, closesocket, connect, getsockname, listen, recv, send, setsockopt, socket,
     WSAGetLastError, WSASetServiceW, WSAStartup, CSADDR_INFO, RNRSERVICE_REGISTER, SEND_RECV_FLAGS,
@@ -40,7 +40,6 @@ const PROBE_CHANNEL: u32 = 3;
 const PROBE_HOLD: Duration = Duration::from_millis(500);
 const DISCOVERY_REFRESH: Duration = Duration::from_secs(3);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
-const WINRT_PAIRING_FALLBACK_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 pub struct WindowsBluetoothState {
@@ -69,6 +68,7 @@ struct Inner {
 
 struct PendingPairing {
     address: String,
+    request_id: String,
     decision: SyncSender<bool>,
 }
 
@@ -258,11 +258,11 @@ impl WindowsBluetoothState {
                 Ok(json!({ "status": "ok" }))
             }
             "bluetooth.pairing.confirm" => {
-                self.resolve_pairing(true)?;
+                self.resolve_pairing(true, &params)?;
                 Ok(json!({ "status": "ok" }))
             }
             "bluetooth.pairing.reject" => {
-                self.resolve_pairing(false)?;
+                self.resolve_pairing(false, &params)?;
                 Ok(json!({ "status": "ok" }))
             }
             _ => Err(format!("Unsupported native Bluetooth method: {method}")),
@@ -831,37 +831,23 @@ impl WindowsBluetoothState {
         if self.try_pair_winrt(address, bridge)? {
             return Ok(());
         }
-        log_native(&format!(
-            "Falling back to the Win32 Bluetooth authentication wizard for {address}"
-        ));
-        thread::sleep(WINRT_PAIRING_FALLBACK_DELAY);
-        self.ensure_radio()?;
-        let mut info = self.find_device(address)?;
-        let code = unsafe {
-            BluetoothAuthenticateDeviceEx(
-                None,
-                None,
-                &mut info,
-                None,
-                AUTHENTICATION_REQUIREMENTS(0),
-            )
-        };
-        if code != 0 && code != ERROR_NO_MORE_ITEMS.0 {
-            return Err(format!(
-                "Bluetooth pairing failed with Windows error {code}"
-            ));
-        }
-        Ok(())
+        Err("Windows cannot perform matching-code pairing with this device. Update your Car Thing image and Bluetooth driver, open the Car Thing Bluetooth screen, then retry.".to_string())
     }
 
-    fn resolve_pairing(&self, accepted: bool) -> Result<(), String> {
-        let pending = self
+    fn resolve_pairing(&self, accepted: bool, params: &Value) -> Result<(), String> {
+        let request_id = required_string(params, "requestId")?;
+        let mut inner = self
             .inner
             .lock()
-            .map_err(|_| "Bluetooth state is poisoned".to_string())?
+            .map_err(|_| "Bluetooth state is poisoned".to_string())?;
+        let pending = inner
             .pending_pairing
-            .take()
+            .as_ref()
             .ok_or_else(|| "No Bluetooth pairing confirmation is pending".to_string())?;
+        if pending.request_id != request_id {
+            return Err("This Bluetooth pairing request has expired".to_string());
+        }
+        let pending = inner.pending_pairing.take().unwrap();
         pending
             .decision
             .send(accepted)
@@ -961,93 +947,90 @@ impl WindowsBluetoothState {
                 return Ok(());
             };
             let kind = args.PairingKind()?;
-            let pin = args.Pin().ok().map(|value| value.to_string());
             log_native(&format!(
-                "Windows pairing ceremony for {}: kind={} pin={}",
-                event_address,
-                kind.0,
-                pin.as_deref().unwrap_or("<none>"),
+                "Windows pairing ceremony for {}: kind={}",
+                event_address, kind.0
             ));
-            if kind == DevicePairingKinds::ProvidePin {
-                return args.AcceptWithPin(&HSTRING::from("0000"));
+            if kind != DevicePairingKinds::ConfirmPinMatch {
+                log_native("Rejecting Bluetooth pairing without a verifiable code");
+                return Ok(());
             }
-            if kind == DevicePairingKinds::DisplayPin {
-                let accept_result = args.Accept();
-                if let Some(pin) = pin {
-                    event_bridge.emit(
-                        "bluetooth.pairing_request",
-                        json!({
-                            "address": event_address,
-                            "name": event_name,
-                            "pin": pin,
-                            "confirmationRequired": false,
-                        }),
-                    );
-                }
-                return accept_result;
+            let pin = args.Pin()?.to_string();
+            if !valid_pairing_pin(&pin) {
+                log_native("Rejecting Bluetooth pairing without a six-digit comparison code");
+                return Ok(());
             }
-            if kind == DevicePairingKinds::ConfirmPinMatch {
-                let pin = args.Pin()?.to_string();
-                let deferral = args.GetDeferral()?;
-                let (decision, response) = sync_channel(1);
-                let registered = event_state
-                    .inner
-                    .lock()
-                    .map(|mut inner| {
-                        if inner.pending_pairing.is_some() {
-                            false
-                        } else {
-                            inner.pending_pairing = Some(PendingPairing {
-                                address: event_address.clone(),
-                                decision,
-                            });
-                            true
-                        }
-                    })
+            let deferral = args.GetDeferral()?;
+            let (decision, response) = sync_channel(1);
+            let request_id = Uuid::new_v4().to_string();
+            let registered = event_state
+                .inner
+                .lock()
+                .map(|mut inner| {
+                    if inner.pending_pairing.is_some() {
+                        return false;
+                    }
+                    inner.pending_pairing = Some(PendingPairing {
+                        address: event_address.clone(),
+                        request_id: request_id.clone(),
+                        decision,
+                    });
+                    true
+                })
+                .unwrap_or(false);
+            if !registered {
+                return deferral.Complete();
+            }
+            event_bridge.emit(
+                "bluetooth.pairing_request",
+                json!({
+                    "address": event_address, "name": event_name, "pin": pin,
+                    "confirmationRequired": true, "requestId": request_id,
+                }),
+            );
+            let worker_state = event_state.clone();
+            let worker_bridge = event_bridge.clone();
+            let worker_address = event_address.clone();
+            let args = args.clone();
+            thread::spawn(move || {
+                let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+                let accepted = response
+                    .recv_timeout(Duration::from_secs(60))
                     .unwrap_or(false);
-                if registered {
-                    event_bridge.emit(
-                        "bluetooth.pairing_request",
-                        json!({
-                            "address": event_address,
-                            "name": event_name,
-                            "pin": pin,
-                            "confirmationRequired": true,
-                        }),
-                    );
-                }
-                let accepted = registered
-                    && response
-                        .recv_timeout(Duration::from_secs(60))
-                        .unwrap_or(false);
-                if let Ok(mut inner) = event_state.inner.lock() {
+                if let Ok(mut inner) = worker_state.inner.lock() {
                     if inner
                         .pending_pairing
                         .as_ref()
-                        .is_some_and(|pending| pending.address == event_address)
+                        .is_some_and(|pending| pending.request_id == request_id)
                     {
                         inner.pending_pairing = None;
                     }
                 }
-                let accept_result = if accepted { args.Accept() } else { Ok(()) };
-                if !accepted {
-                    event_bridge.emit(
-                        "bluetooth.pairing_cancelled",
-                        json!({ "address": event_address }),
-                    );
+                let result = match accepted {
+                    true => args.Accept(),
+                    false => {
+                        worker_bridge.emit("bluetooth.pairing_cancelled", json!({
+                            "address": worker_address, "requestId": request_id,
+                            "error": "Bluetooth pairing was rejected or timed out. Try pairing again.",
+                        }));
+                        Ok(())
+                    }
+                };
+                if let Err(error) = result {
+                    log_native(&format!("Bluetooth pairing response failed: {error}"));
                 }
-                let complete_result = deferral.Complete();
-                accept_result?;
-                return complete_result;
-            }
-            args.Accept()
+                if let Err(error) = deferral.Complete() {
+                    log_native(&format!("Bluetooth pairing deferral failed: {error}"));
+                }
+            });
+            Ok(())
         });
         let token = custom
             .PairingRequested(&requested)
             .map_err(|error| format!("Unable to register custom Bluetooth pairing: {error}"))?;
         let operation = custom.PairWithProtectionLevelAsync(
             supported_pairing_kinds(),
-            DevicePairingProtectionLevel::None,
+            DevicePairingProtectionLevel::EncryptionAndAuthentication,
         );
         let result = operation
             .and_then(|operation| operation.get())
@@ -1066,38 +1049,8 @@ impl WindowsBluetoothState {
             DevicePairingResultStatus::Paired | DevicePairingResultStatus::AlreadyPaired => {
                 Ok(true)
             }
-            status if should_retry_pairing_with_win32(status) => {
-                log_native(&format!(
-                    "WinRT pairing returned {status:?} ({}); retrying with Win32 authentication",
-                    status.0,
-                ));
-                Ok(false)
-            }
             status => Err(pairing_status_error(status)),
         }
-    }
-
-    fn find_device(&self, address: &str) -> Result<BLUETOOTH_DEVICE_INFO, String> {
-        let devices = self.enumerate_devices()?;
-        if !devices
-            .iter()
-            .any(|device| device.get("address").and_then(Value::as_str) == Some(address))
-        {
-            return Err(format!("Bluetooth device {address} was not found"));
-        }
-        let target = parse_address(address)?;
-        let mut info = BLUETOOTH_DEVICE_INFO {
-            dwSize: std::mem::size_of::<BLUETOOTH_DEVICE_INFO>() as u32,
-            Address: target,
-            ..Default::default()
-        };
-        let result = unsafe { BluetoothGetDeviceInfo(None, &mut info) };
-        if result != 0 {
-            return Err(format!(
-                "Unable to read Bluetooth device {address}: {result}"
-            ));
-        }
-        Ok(info)
     }
 
     fn remove(&self, address: &str) -> Result<(), String> {
@@ -2057,10 +2010,6 @@ fn next_generation(current: u64) -> u64 {
     current.wrapping_add(1)
 }
 
-fn should_retry_pairing_with_win32(status: DevicePairingResultStatus) -> bool {
-    status == DevicePairingResultStatus::Failed
-}
-
 fn pairing_status_name(status: DevicePairingResultStatus) -> &'static str {
     match status {
         DevicePairingResultStatus::Paired => "Paired",
@@ -2088,6 +2037,12 @@ fn pairing_status_name(status: DevicePairingResultStatus) -> &'static str {
 }
 
 fn pairing_status_error(status: DevicePairingResultStatus) -> String {
+    if status == DevicePairingResultStatus::ProtectionLevelCouldNotBeMet
+        || status == DevicePairingResultStatus::RequiredHandlerNotRegistered
+        || status == DevicePairingResultStatus::Failed
+    {
+        return format!("Windows could not perform matching-code Bluetooth pairing. Update your Car Thing image and Bluetooth driver, open the Car Thing Bluetooth screen, then retry. ({}, Windows status {})", pairing_status_name(status), status.0);
+    }
     if status == DevicePairingResultStatus::AuthenticationTimeout {
         return "Bluetooth pairing timed out. Open the Bluetooth device list or Add Phone screen on your Car Thing, keep it nearby, complete any Windows pairing prompt, then try again. (AuthenticationTimeout, Windows status 7)".to_string();
     }
@@ -2103,10 +2058,12 @@ fn unpair_status_is_success(status: DeviceUnpairingResultStatus) -> bool {
         || status == DeviceUnpairingResultStatus::AlreadyUnpaired
 }
 
+fn valid_pairing_pin(pin: &str) -> bool {
+    pin.len() == 6 && pin.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 fn supported_pairing_kinds() -> DevicePairingKinds {
-    DevicePairingKinds::ConfirmOnly
-        | DevicePairingKinds::ProvidePin
-        | DevicePairingKinds::ConfirmPinMatch
+    DevicePairingKinds::ConfirmPinMatch
 }
 
 fn resolve_winrt_device(
@@ -2224,8 +2181,8 @@ fn bytes_param(params: &Value, key: &str) -> Result<Vec<u8>, String> {
 mod tests {
     use super::{
         merge_device, next_generation, pairing_status_error, pairing_status_name,
-        passive_device_search_params, should_retry_pairing_with_win32, supported_pairing_kinds,
-        unpair_status_is_success,
+        passive_device_search_params, supported_pairing_kinds, unpair_status_is_success,
+        valid_pairing_pin,
     };
     use serde_json::json;
     use windows::Devices::Enumeration::{
@@ -2276,16 +2233,6 @@ mod tests {
     }
 
     #[test]
-    fn generic_winrt_pairing_failure_uses_the_win32_fallback() {
-        assert!(should_retry_pairing_with_win32(
-            DevicePairingResultStatus::Failed
-        ));
-        assert!(!should_retry_pairing_with_win32(
-            DevicePairingResultStatus::AuthenticationFailure
-        ));
-    }
-
-    #[test]
     fn authentication_timeout_explains_recovery_without_retrying_automatically() {
         let status = DevicePairingResultStatus(7);
         assert_eq!(pairing_status_name(status), "AuthenticationTimeout");
@@ -2294,7 +2241,6 @@ mod tests {
         assert!(message.contains("Bluetooth device list or Add Phone"));
         assert!(message.contains("complete any Windows pairing prompt"));
         assert!(message.contains("Windows status 7"));
-        assert!(!should_retry_pairing_with_win32(status));
         assert_eq!(
             pairing_status_error(DevicePairingResultStatus(99)),
             "Bluetooth pairing failed with Windows status Unknown (99)",
@@ -2302,10 +2248,20 @@ mod tests {
     }
 
     #[test]
-    fn legacy_car_thing_pairing_never_advertises_display_pin() {
+    fn pairing_requires_a_user_verifiable_code() {
         let kinds = supported_pairing_kinds();
-        assert_ne!(kinds.0 & DevicePairingKinds::ProvidePin.0, 0);
+        assert_eq!(kinds.0 & DevicePairingKinds::ProvidePin.0, 0);
+        assert_eq!(kinds.0 & DevicePairingKinds::ConfirmOnly.0, 0);
         assert_eq!(kinds.0 & DevicePairingKinds::DisplayPin.0, 0);
+    }
+
+    #[test]
+    fn comparison_code_preserves_leading_zeroes_and_requires_six_digits() {
+        assert!(valid_pairing_pin("012345"));
+        assert!(valid_pairing_pin("000000"));
+        for pin in ["0000", "", "12345", "1234567", "12a456", "１２３４５６"] {
+            assert!(!valid_pairing_pin(pin));
+        }
     }
 
     #[test]

@@ -27,10 +27,12 @@ interface HostPairingEvent extends HostAddressEvent {
   name?: string;
   pin: string;
   confirmationRequired?: boolean;
+  requestId?: string;
 }
 
 interface HostPairingCancelledEvent {
   error?: string;
+  requestId?: string;
 }
 
 interface HostServerConnectionEvent extends HostAddressEvent {
@@ -184,17 +186,20 @@ export class WindowsPairingAgent implements PairingAgentLike {
     if (this.subscriptions.length > 0) return;
     this.subscriptions.push(
       this.bridge.onEvent<HostPairingEvent>("bluetooth.pairing_request", (event) => {
-        if (!validAddressEvent(event) || typeof event.pin !== "string") return;
+        if (!validAddressEvent(event) || typeof event.pin !== "string" || !/^\d{6}$/.test(event.pin)
+          || typeof event.requestId !== "string" || !event.requestId || event.confirmationRequired === false) return;
         this._pendingPin = {
           address: event.address,
           name: event.name ?? "",
           pin: event.pin,
           type: "bluetooth_pin",
-          confirmationRequired: event.confirmationRequired !== false,
+          confirmationRequired: true,
+          requestId: event.requestId,
         };
         this.onPinDisplay?.(this._pendingPin);
       }),
       this.bridge.onEvent<HostPairingCancelledEvent>("bluetooth.pairing_cancelled", (event) => {
+        if (event.requestId && event.requestId !== this._pendingPin?.requestId) return;
         this._pendingPin = null;
         this.onPairingCancelled?.(
           typeof event?.error === "string" ? event.error : undefined,
@@ -206,19 +211,25 @@ export class WindowsPairingAgent implements PairingAgentLike {
     );
   }
 
-  confirmPairing(): void {
-    this._pendingPin = null;
-    void this.bridge.call("bluetooth.pairing.confirm").catch((error) => {
-      log.error(`Pairing confirmation failed: ${errorMessage(error)}`);
-    });
+  async confirmPairing(requestId?: string): Promise<void> {
+    this.requirePending(requestId);
+    await this.bridge.call("bluetooth.pairing.confirm", { requestId });
+    if (this._pendingPin?.requestId === requestId) this._pendingPin = null;
   }
 
-  rejectPairing(): void {
-    this._pendingPin = null;
-    void this.bridge.call("bluetooth.pairing.reject").catch((error) => {
-      log.error(`Pairing rejection failed: ${errorMessage(error)}`);
-    });
+  async rejectPairing(requestId?: string): Promise<void> {
+    this.requirePending(requestId);
+    await this.bridge.call("bluetooth.pairing.reject", { requestId });
+    if (this._pendingPin?.requestId === requestId) this._pendingPin = null;
   }
+
+  private requirePending(requestId?: string): PairingPinEvent {
+    if (!requestId || this._pendingPin?.requestId !== requestId) {
+      throw new Error("This Bluetooth pairing request has expired");
+    }
+    return this._pendingPin;
+  }
+
 }
 
 export class WindowsRFCOMMServer implements RFCOMMServerLike {

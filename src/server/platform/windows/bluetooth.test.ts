@@ -228,25 +228,47 @@ describe("Windows Bluetooth host adapters", () => {
       address: "30:E3:D6:00:B5:5F",
       name: "Nocturne (Q01S)",
       pin: "042819",
+      requestId: "request-1",
     });
     expect(agent.pendingPin).toEqual({
       address: "30:E3:D6:00:B5:5F",
       name: "Nocturne (Q01S)",
       pin: "042819",
+      requestId: "request-1",
       type: "bluetooth_pin",
       confirmationRequired: true,
     });
     expect(displayedPin).toBe("042819");
 
-    agent.confirmPairing();
+    await agent.confirmPairing("request-1");
     await Bun.sleep(0);
     expect(bridge.calls).toContainEqual({
       method: "bluetooth.pairing.confirm",
-      params: {},
+      params: { requestId: "request-1" },
     });
   });
 
-  test("presents display-only PINs and propagates native pairing failures", async () => {
+  test("requires the current request and propagates bridge failures", async () => {
+    const bridge = new FakeHostBridge();
+    const agent = new WindowsPairingAgent(bridge);
+    await agent.register();
+    bridge.emit("bluetooth.pairing_request", {
+      address: "30:E3:D6:00:B5:5F", pin: "123456", requestId: "entry-1",
+    });
+    await expect(agent.confirmPairing("stale")).rejects.toThrow("expired");
+    expect(bridge.calls).toHaveLength(0);
+    bridge.emit("bluetooth.pairing_cancelled", { requestId: "stale" });
+    expect(agent.pendingPin?.requestId).toBe("entry-1");
+    await agent.confirmPairing("entry-1");
+    expect(bridge.calls).toContainEqual({ method: "bluetooth.pairing.confirm", params: { requestId: "entry-1" } });
+    expect(agent.pendingPin).toBeNull();
+    bridge.emit("bluetooth.pairing_request", { address: "30:E3:D6:00:B5:5F", pin: "123456", requestId: "entry-2" });
+    bridge.call = async () => { throw new Error("native unavailable"); };
+    await expect(agent.rejectPairing("entry-2")).rejects.toThrow("native unavailable");
+    expect(agent.pendingPin?.requestId).toBe("entry-2");
+  });
+
+  test("ignores unsupported PIN ceremonies and propagates native pairing failures", async () => {
     const bridge = new FakeHostBridge();
     const agent = new WindowsPairingAgent(bridge);
     let displayed: PairingPinEvent | null = null;
@@ -265,10 +287,8 @@ describe("Windows Bluetooth host adapters", () => {
       pin: "0000",
       confirmationRequired: false,
     });
-    expect(displayed).toMatchObject({
-      pin: "0000",
-      confirmationRequired: false,
-    });
+    expect(displayed).toBeNull();
+    expect(agent.pendingPin).toBeNull();
 
     bridge.emit("bluetooth.pairing_cancelled", {
       address: "30:E3:D6:00:B5:5F",

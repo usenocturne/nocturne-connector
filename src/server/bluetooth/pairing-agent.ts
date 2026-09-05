@@ -9,6 +9,7 @@ export interface PairingPinEvent {
   pin: string;
   type: "bluetooth_pin";
   confirmationRequired?: boolean;
+  requestId?: string;
 }
 
 export class PairingAgent {

@@ -67,8 +67,8 @@ export interface PairingAgentLike {
   setOnPinDisplay(handler: (event: PairingPinEvent) => void): void;
   setOnPairingCancelled(handler: (error?: string) => void): void;
   register(): Promise<void>;
-  confirmPairing(): void;
-  rejectPairing(): void;
+  confirmPairing(requestId?: string): void | Promise<void>;
+  rejectPairing(requestId?: string): void | Promise<void>;
 }
 
 export interface BluetoothTimerHandle {
@@ -186,12 +186,12 @@ export class BluetoothService {
     return this.agent.pendingPin;
   }
 
-  confirmPairing(): void {
-    this.agent.confirmPairing();
+  async confirmPairing(requestId?: string): Promise<void> {
+    await this.agent.confirmPairing(requestId);
   }
 
-  rejectPairing(): void {
-    this.agent.rejectPairing();
+  async rejectPairing(requestId?: string): Promise<void> {
+    await this.agent.rejectPairing(requestId);
   }
 
   async initialize(): Promise<void> {

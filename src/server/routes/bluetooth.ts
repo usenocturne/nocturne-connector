@@ -46,12 +46,14 @@ export function createBluetoothRoutes(bt: BluetoothService) {
       const pin = bt.pendingPairingPin;
       return { pending: !!pin, request: pin };
     })
-    .post("/pairing-confirm", () => {
-      bt.confirmPairing();
+    .post("/pairing-confirm", async ({ body }) => {
+      const decision = bt.usesWindowsRouteSemantics ? pairingDecision(body) : {};
+      await bt.confirmPairing(decision.requestId);
       return { success: true };
     })
-    .post("/pairing-reject", () => {
-      bt.rejectPairing();
+    .post("/pairing-reject", async ({ body }) => {
+      const decision = bt.usesWindowsRouteSemantics ? pairingDecision(body) : {};
+      await bt.rejectPairing(decision.requestId);
       return { success: true };
     })
     .get("/connections", () => bluetoothConnectionsResponse(bt));
@@ -105,4 +107,11 @@ export async function bluetoothConnectionsResponse(
   return {
     connections: Array.from(connections.values()),
   };
+}
+
+function pairingDecision(body: unknown): { requestId?: string } {
+  if (!body || typeof body !== "object" || !("requestId" in body) || typeof body.requestId !== "string" || !body.requestId) {
+    throw new Error("A current Bluetooth pairing request is required");
+  }
+  return { requestId: body.requestId };
 }
