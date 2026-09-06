@@ -1,3 +1,4 @@
+import { hasErrorCode } from "../utils/errors";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "fs";
 import { dirname } from "path";
@@ -54,7 +55,9 @@ function atomicWriteFile(path: string, data: string): void {
   } catch (err) {
     try {
       unlinkSync(tmp);
-    } catch {}
+    } catch (error) {
+      if (!hasErrorCode(error, "ENOENT")) log.warn("Unable to remove temporary analytics file", error);
+    }
     throw err;
   }
 }
@@ -252,7 +255,9 @@ export class AnalyticsService {
         if (existsSync(ANALYTICS_PENDING_PATH)) {
           try {
             unlinkSync(ANALYTICS_PENDING_PATH);
-          } catch {}
+          } catch (error) {
+            if (!hasErrorCode(error, "ENOENT")) log.warn("Unable to remove the completed analytics queue", error);
+          }
         }
         return;
       }

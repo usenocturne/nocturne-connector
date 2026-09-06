@@ -1,3 +1,4 @@
+import { hasErrorCode } from "../utils/errors";
 import { createHash } from "crypto";
 import { once } from "events";
 import {
@@ -10,9 +11,10 @@ import {
   readFileSync,
   readSync,
   statSync,
-  writeFileSync,
 } from "fs";
 import { Transform } from "stream";
+import { mkdir, open, rename, rm } from "fs/promises";
+import { writeAll } from "../utils/file-io";
 import { pipeline } from "stream/promises";
 import { createGunzip } from "zlib";
 import {
@@ -165,7 +167,9 @@ function readBootInfo(): BootInfo {
       .split(/\s+/)
       .find((part) => part.startsWith("root="));
     rootDevice = rootArg ? rootArg.slice("root=".length) : null;
-  } catch {}
+  } catch (error) {
+    if (!hasErrorCode(error, "ENOENT")) log.warn("Unable to read the active boot partition", error);
+  }
 
   const match = rootDevice?.match(/([23])$/);
   const activePartition = match ? (Number(match[1]) as 2 | 3) : null;
@@ -206,14 +210,11 @@ function gzipUncompressedSize(filePath: string): number | null {
   }
 }
 
-async function sha256File(filePath: string): Promise<string> {
-  const hash = createHash("sha256");
-  await new Promise<void>((resolve, reject) => {
-    const stream = createReadStream(filePath);
-    stream.on("data", (chunk) => hash.update(chunk));
-    stream.on("error", reject);
-    stream.on("end", resolve);
-  });
+async function hashFile(filePath: string, algorithm: "sha256" | "md5"): Promise<string> {
+  const hash = createHash(algorithm);
+  for await (const chunk of createReadStream(filePath, { highWaterMark: 64 * 1024 })) {
+    hash.update(chunk);
+  }
   return hash.digest("hex");
 }
 
@@ -286,13 +287,47 @@ export class OTAService {
 
     if (!res.ok) throw new Error(`Download failed: ${res.status}`);
 
-    const buf = await res.arrayBuffer();
+    if (!res.body) throw new Error("OTA download response has no body");
     const dir = this.legacyOtaDirectory;
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-
     const filePath = join(dir, "nocturne-update.swu");
-    writeFileSync(filePath, Buffer.from(buf));
-    log.info(`Downloaded ${buf.byteLength} bytes to ${filePath}`);
+    const partial = join(dir, `.nocturne-update-${crypto.randomUUID()}.partial`);
+    const reader = res.body.getReader();
+    let downloaded = 0;
+    try {
+      await mkdir(dir, { recursive: true });
+      const file = await open(partial, "wx", 0o600);
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          await writeAll(file, Buffer.from(value));
+          downloaded += value.byteLength;
+        }
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      const contentLength = res.headers.get("content-length");
+      const contentEncoding = res.headers.get("content-encoding")?.trim().toLowerCase();
+      if (
+        (!contentEncoding || contentEncoding === "identity") &&
+        contentLength !== null && downloaded !== Number(contentLength)
+      ) {
+        throw new Error("OTA download size does not match Content-Length");
+      }
+      await rename(partial, filePath);
+      log.info(`Downloaded ${downloaded} bytes to ${filePath}`);
+    } catch (error) {
+      await reader.cancel().catch((cancelError) => {
+        log.debug("OTA response cancellation failed", cancelError);
+      });
+      await rm(partial, { force: true }).catch((cleanupError) => {
+        log.warn("Failed to remove partial OTA download", cleanupError);
+      });
+      throw error;
+    } finally {
+      reader.releaseLock();
+    }
 
     return filePath;
   }
@@ -316,9 +351,23 @@ export class OTAService {
   }
 
   calculateMD5(filePath: string): string {
-    if (!existsSync(filePath)) throw new Error("Update file not found");
-    const data = readFileSync(filePath);
-    return createHash("md5").update(data).digest("hex");
+    const hash = createHash("md5");
+    const fd = openSync(filePath, "r");
+    try {
+      const chunk = Buffer.alloc(64 * 1024);
+      while (true) {
+        const size = readSync(fd, chunk);
+        if (size === 0) break;
+        hash.update(chunk.subarray(0, size));
+      }
+      return hash.digest("hex");
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  async calculateMD5Async(filePath: string): Promise<string> {
+    return hashFile(filePath, "md5");
   }
 
   getConnectorUpdateStatus(): ConnectorUpdateStatus {
@@ -525,7 +574,7 @@ export class OTAService {
       speedBytesPerSecond: null,
     });
 
-    const actualSha = await sha256File(filePath);
+    const actualSha = await hashFile(filePath, "sha256");
     if (expectedSha && actualSha.toLowerCase() !== expectedSha.toLowerCase()) {
       throw new Error(`Update checksum mismatch: expected ${expectedSha}, got ${actualSha}`);
     }

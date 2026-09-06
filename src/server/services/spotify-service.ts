@@ -8,7 +8,7 @@ import {
   SpotifyOperationHash,
   SPOTIFY_SKIPPED_PATH,
 } from "../config";
-import { SpotifyDatabaseStorage, type SpotifyDatabaseCredentials } from "./spotify-database";
+import { SpotifyDatabaseStorage } from "./spotify-database";
 import { createLogger } from "../utils/logger";
 import { base62ToHex, hexToBase62 } from "../utils/base62";
 import {
@@ -269,7 +269,7 @@ export class SpotifyService {
       if (!this._spotifyUserId) {
         this._spotifyUserId = profile?.profile?.username ?? profile?.username ?? null;
       }
-    } catch {}
+    } catch (error) { log.debug("Spotify user identity lookup failed; retaining the previous identity", error); }
     return this._spotifyUserId;
   }
 
@@ -735,12 +735,12 @@ export class SpotifyService {
     try {
       const info = await this.fetchTrackInfoFromMetadata(trackId);
       if (info && (info.title || info.artists.length > 0)) return info;
-    } catch {}
+    } catch (error) { log.debug("Metadata track enrichment failed; trying Pathfinder", error); }
 
     try {
       const info = await this.fetchTrackInfoFromGraphQL(trackId);
       if (info && (info.title || info.artists.length > 0)) return info;
-    } catch {}
+    } catch (error) { log.debug("Pathfinder track enrichment failed; retaining playback metadata", error); }
 
     return null;
   }
@@ -1124,7 +1124,7 @@ export class SpotifyService {
         if (info) {
           this.mergeTrackInfoIntoPlayerState(state.player_state, info);
         }
-      } catch {}
+      } catch (error) { log.debug("Unable to enrich Connect playback metadata", error); }
     }
 
     return this.transformConnectState(state);
@@ -1261,7 +1261,7 @@ export class SpotifyService {
       try {
         const count = await this.fetchPlaylistTrackCount(playlist.id);
         playlist.tracks = { total: count };
-      } catch {}
+      } catch (error) { log.debug("Unable to enrich playlist track count", error); }
     }
 
     const filteredOut = rawItems.length - playlists.length;
@@ -2012,7 +2012,7 @@ export class SpotifyService {
 
         try {
           album.artists = await this.fetchAlbumArtists(album.id);
-        } catch {}
+        } catch (error) { log.debug("Unable to enrich recent album artists", error); }
 
         albums.push(album);
       } catch {

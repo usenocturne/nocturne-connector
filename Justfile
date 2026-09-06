@@ -10,7 +10,7 @@ test:
     cd src && bun test
 
 lint:
-    pre-commit run --all-files
+    cd src && bun run lint
 
 docker-qemu:
     docker run --rm --privileged multiarch/qemu-user-static --reset -p yes

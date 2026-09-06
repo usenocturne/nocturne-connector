@@ -171,6 +171,8 @@ export class PairingAgent {
       const obj = await this.bus.getProxyObject("org.bluez", "/org/bluez");
       const agentManager = obj.getInterface("org.bluez.AgentManager1");
       await agentManager.UnregisterAgent(this.agentPath);
-    } catch {}
+    } catch (error) {
+      log.warn("Unable to unregister Bluetooth pairing agent", error);
+    }
   }
 }

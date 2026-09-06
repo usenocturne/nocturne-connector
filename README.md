@@ -102,6 +102,10 @@ Available recipes:
   windows-universal
 ```
 
+Before submitting changes, run `just test`, `just lint`, and
+`cd src && bun run build`. The lint command uses the installed TypeScript
+compiler to check types and reject unused locals and parameters.
+
 ## Updating
 
 Connector images use an A/B root partition layout. The boot partition runs U-Boot, which selects either root slot A or B and rolls back to the previous slot if a new slot fails to boot twice.

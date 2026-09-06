@@ -130,7 +130,7 @@ export class SpotifyWebSocketService {
         this.handleMessage(String(event.data));
       };
 
-      this.ws.onerror = (event) => {
+      this.ws.onerror = () => {
         if (!this.isIntentionalDisconnect) {
           log.error("WebSocket error");
           this.handleConnectionError(new Error("WebSocket error"));

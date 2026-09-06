@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { get, post } from "../api";
 import { useAutoRefresh } from "../hooks/useWebSocket";
 import { Card, CardContent } from "@/components/ui/card";
@@ -26,13 +26,17 @@ export function SpotifyAuth({ onLinked, onSkipped }: SpotifyAuthProps = {}) {
   const [authState, setAuthState] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const [skipConfirmOpen, setSkipConfirmOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
       const data = await get("/api/spotify/status");
       setAuthState(data.authState);
-    } catch {}
+      setRefreshError(null);
+    } catch (error) {
+      setRefreshError(error instanceof Error ? error.message : String(error));
+    }
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
@@ -230,7 +234,7 @@ export function SpotifyAuth({ onLinked, onSkipped }: SpotifyAuthProps = {}) {
         </Card>
       )}
 
-      {error && <p className="mt-4 text-sm text-destructive">{error}</p>}
+      {(error || refreshError) && <p role="alert" className="mt-4 text-sm text-destructive">{error || refreshError}</p>}
 
       {isWindows && <AlertDialog open={skipConfirmOpen} onOpenChange={setSkipConfirmOpen}>
         <AlertDialogContent>

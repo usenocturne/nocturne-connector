@@ -1,7 +1,6 @@
 import type { SpotifyService } from "./spotify-service";
 import {
   filterRecursively,
-  filterDeviceResponse,
   filterLyricsResponse,
 } from "./spotify-filters";
 import { createLogger } from "../utils/logger";

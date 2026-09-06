@@ -1,4 +1,3 @@
-import React from "react";
 import { Badge } from "@/components/ui/badge";
 
 export function ConnectionStatus({ connected, label }: { connected: boolean; label: string }) {

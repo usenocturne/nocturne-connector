@@ -24,7 +24,7 @@ import { AnalyticsService } from "./services/analytics-service";
 import { SpotifyDatabaseStorage } from "./services/spotify-database";
 import { createLogger } from "./utils/logger";
 import { getConnectorVersion } from "./utils/version";
-import { existsSync, statSync } from "fs";
+import { statSync } from "fs";
 import { MAX_OTA_TRANSFER_WINDOW_BYTES } from "./services/ota-transfer";
 import type { HostBridgeClient } from "./platform/host-bridge";
 import {
@@ -87,10 +87,8 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   private connections = new Map<string, DeviceConnection>();
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   private keepAliveFailures = new Map<string, number>();
-  private didSendInitialPing = false;
   private wsBroadcast: WSBroadcast | null = null;
   private downloadedOTAFilePath: string | null = null;
-  private cachedPlayerState: any = null;
   private connectorUpdateCheckPromise: Promise<ConnectorUpdateCheckResponse> | null = null;
   private activeCarThingUpdate: CarThingAvailableUpdate | null = null;
   private carThingInstallPromise: Promise<void> | null = null;
@@ -264,7 +262,6 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
 
     this.connections.set(devicePath, { rpcClient, deviceInfo: null });
     this.keepAliveFailures.delete(devicePath);
-    this.didSendInitialPing = false;
     this.startKeepAlive(15);
 
     this.broadcastToWebSocket("device.connected", { devicePath, address });
@@ -548,7 +545,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
     }
   }
 
-  async onCall(id: string, method: string, params: unknown): Promise<{ result?: unknown; error?: string }> {
+  async onCall(_id: string, method: string, params: unknown): Promise<{ result?: unknown; error?: string }> {
     log.info(`RPC call: ${method}`);
     const p = (params as any) ?? {};
     const normalizedMethod = normalizeSpotifyCommand(method);
@@ -601,7 +598,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
         );
         this.downloadedOTAFilePath = filePath;
         const stat = statSync(filePath);
-        const md5 = this.otaService.calculateMD5(filePath);
+        const md5 = await this.otaService.calculateMD5Async(filePath);
 
         await this.broadcastToDevices("device.ota.package_state", {
           state: "download_success",
@@ -672,7 +669,9 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
       const chunkIdx = d?.chunk_idx;
       if (messageId != null && chunkIdx != null) {
         for (const [, conn] of this.connections) {
-          conn.rpcClient.retransmitChunk(messageId, chunkIdx).catch(() => {});
+          conn.rpcClient.retransmitChunk(messageId, chunkIdx).catch((error) => {
+            log.warn("Unable to retransmit RPC chunk", error);
+          });
         }
       }
     } else if (topic === "daemon.ready") {
@@ -1103,22 +1102,19 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
 
     this.enrichTrackMetadata(result.data)
       .then(() => {
-        this.cachePlayerState(result.data);
+        this.updateActiveSpotifyDevice(result.data);
         this.broadcastToDevices(result.topic, result.data);
         this.broadcastToWebSocket(result.topic, result.data);
       })
       .catch(() => {
-        this.cachePlayerState(result.data);
+        this.updateActiveSpotifyDevice(result.data);
         this.broadcastToDevices(result.topic, result.data);
         this.broadcastToWebSocket(result.topic, result.data);
       });
   }
 
-  private cachePlayerState(data: any): void {
+  private updateActiveSpotifyDevice(data: any): void {
     const cluster = data?.payloads?.[0]?.cluster;
-    if (cluster?.player_state) {
-      this.cachedPlayerState = cluster;
-    }
     const activeDeviceId = cluster?.active_device_id;
     if (activeDeviceId) {
       this.spotifyService.setActiveDeviceId(activeDeviceId);

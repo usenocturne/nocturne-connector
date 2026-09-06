@@ -138,7 +138,9 @@ export class RFCOMMClient {
     if (this.fd === fd) {
       try {
         closeSync(fd);
-      } catch {}
+      } catch (error) {
+        log.warn("Unable to close RFCOMM socket", error);
+      }
       this.fd = -1;
     }
     this._connected = false;
@@ -172,7 +174,9 @@ export class RFCOMMClient {
     if (this.fd >= 0) {
       try {
         closeSync(this.fd);
-      } catch {}
+      } catch (error) {
+        log.warn("Unable to close RFCOMM socket", error);
+      }
       this.fd = -1;
     }
     this._connected = false;

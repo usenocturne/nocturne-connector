@@ -1,3 +1,4 @@
+import { hasErrorCode } from "./utils/errors";
 import { Elysia } from "elysia";
 import { cors } from "@elysiajs/cors";
 import type { Server } from "bun";
@@ -59,7 +60,9 @@ async function fetchAndApplyTimezone(): Promise<void> {
           const { writeFileSync, existsSync, symlinkSync, unlinkSync } = await import("fs");
           const zonefile = `/usr/share/zoneinfo/${timezone}`;
           if (existsSync(zonefile)) {
-            try { unlinkSync("/etc/localtime"); } catch {}
+            try { unlinkSync("/etc/localtime"); } catch (error) {
+              if (!hasErrorCode(error, "ENOENT")) throw error;
+            }
             symlinkSync(zonefile, "/etc/localtime");
             writeFileSync("/etc/timezone", timezone + "\n");
           }

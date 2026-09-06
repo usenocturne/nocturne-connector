@@ -8,6 +8,14 @@ const connectionHandlers = new Set<(connected: boolean) => void>();
 const topicHandlers = new Map<string, Set<EventHandler>>();
 const globalHandlers = new Set<(topic: string, data: any) => void>();
 
+function notify(callback: () => void, category: string): void {
+  try {
+    callback();
+  } catch (error) {
+    console.error(`Connector ${category} subscriber failed:`, error);
+  }
+}
+
 function getWsUrl(): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${location.host}/ws`;
@@ -15,7 +23,7 @@ function getWsUrl(): string {
 
 function setConnected(connected: boolean) {
   _connected = connected;
-  for (const handler of connectionHandlers) handler(connected);
+  for (const handler of connectionHandlers) notify(() => handler(connected), "connection");
 }
 
 export function connectWebSocket(): void {
@@ -39,7 +47,9 @@ export function connectWebSocket(): void {
       } else if (msg.type === "response") {
         dispatch("ws.response", msg);
       }
-    } catch {}
+    } catch {
+      console.warn("Ignored a malformed Connector WebSocket message");
+    }
   };
 
   socket.onclose = () => {
@@ -55,9 +65,9 @@ export function connectWebSocket(): void {
 function dispatch(topic: string, data: any) {
   const handlers = topicHandlers.get(topic);
   if (handlers) {
-    for (const handler of handlers) handler(data);
+    for (const handler of handlers) notify(() => handler(data), "event");
   }
-  for (const handler of globalHandlers) handler(topic, data);
+  for (const handler of globalHandlers) notify(() => handler(topic, data), "global event");
 }
 
 export function subscribe(topic: string, handler: EventHandler): () => void {
@@ -80,7 +90,7 @@ export function subscribeAll(handler: (topic: string, data: any) => void): () =>
 
 export function onConnectionChange(handler: (connected: boolean) => void): () => void {
   connectionHandlers.add(handler);
-  handler(_connected);
+  notify(() => handler(_connected), "connection");
   return () => connectionHandlers.delete(handler);
 }
 

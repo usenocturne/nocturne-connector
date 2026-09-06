@@ -93,13 +93,11 @@ class LoopbackDaemon implements RPCClientDelegate {
 class LoopbackRFCOMMClient implements RFCOMMClientLike {
   connected = false;
   address = "";
-  private dataHandler: ((data: Buffer) => void) | null = null;
   private disconnectHandler: ((address: string) => void) | null = null;
 
   constructor(private readonly daemon: LoopbackDaemon) {}
 
   setDataHandler(handler: (data: Buffer) => void): void {
-    this.dataHandler = handler;
     this.daemon.setConnectorDataHandler(handler);
   }
 

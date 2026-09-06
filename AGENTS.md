@@ -4,7 +4,7 @@
 **Runtime (server):** Bun + TypeScript + Elysia
 **Runtime (UI):** Vite + React 19 + Tailwind 4 + Radix UI
 **Image:** Alpine-based, A/B rootfs with U-Boot fallback, built via `raspi-alpine`-style scripts
-**Related repos:** `nocturned` (the daemon on the Car Thing this bridges Spotify auth + BT to), `nocturne-ui` (the kiosk UI on the Car Thing — independent), `nocturne-image` (firmware that pairs with this device).
+**Car Thing integration:** The daemon, kiosk UI, and firmware image live in `usenocturne/nocturne` under `crates/daemon`, `packages/ui`, and `image`.
 
 ## OVERVIEW
 
@@ -23,7 +23,7 @@ The Pi acts as a controller box; the Car Thing remains the primary user-facing d
 nocturne-connector/
 ├── README.md
 ├── LICENSE                       # Apache (NOT GPL — separate from firmware repos)
-├── Justfile                      # connector-api, run, lint, docker-qemu
+├── Justfile                      # connector-api, run, test, lint, docker-qemu
 ├── build.sh                      # Top-level builder — produces output/*.img.gz + *_update.img.gz
 ├── wpa_supplicant.conf           # Default Wi-Fi config baked into image (user edits before flash)
 ├── scripts/
@@ -61,7 +61,7 @@ nocturne-connector/
         ├── main.tsx
         ├── App.tsx               # Router + theme provider
         ├── pages/                # SetupWizard.tsx, Dashboard.tsx, SpotifyAuth.tsx, ...
-        ├── components/           # Layout.tsx, ThemeProvider.tsx, ui/* (Radix wrappers)
+        ├── components/           # Layout.tsx, ui/* (Radix wrappers)
         └── hooks/                # useAuth, useWebSocket, ...
 ```
 
@@ -97,6 +97,7 @@ The browser UI talks to the server only via REST + WS; it does NOT implement the
 - **Car Thing OTA uses protocol v2:** The Pi connector handles `ota.request_check`, `ota.request_install`, `device.ota.transfer`, and `ota.asset_range*` with the same manifest contract as the mobile and macOS companions. Requests retain `from` and send exact `image_from` and `bandaid_from` version lanes, filling omitted lanes from cached device info and then falling them back to `from` for older daemons. Before `ota.package_ready`, it downloads and SHA-256/size verifies the primary package and every secondary range asset into per-update directories under `/data/nocturne-connector/car-thing-ota/artifacts`; update IDs and asset names must remain bounded single safe filesystem components. Delta ranges must then come only from those local files, never from HTTP in the active install. Completed files and the active session are persisted atomically for verified cache reuse and reconnect recovery, a completed handshake proactively repeats `ota.begin` plus `ota.package_ready`, and terminal completion/error cleanup removes the dedicated OTA cache only. The connector advertises checksum-envelope support with a 128 KiB transfer maximum. Keep `NOCTURNE_OTA_SERVER_URL` available for local release testing.
 - **OTA traffic is lower priority than control traffic:** RPC chunk writers retain retransmittable envelopes for both `chunked` and `base64-newline` transports. Transfer responses and delta range chunks use the shared 128 KiB window ceiling; tiny request/ack range chunks can saturate RFCOMM control traffic during sustained delta updates. Transfer responses return native MessagePack binary inside checksum envelopes and reject windows over 128 KiB. The Pi retains its released behavior where `raw_checksum_envelopes` may select raw chunked transfer responses. Windows keeps checksum envelopes inside the active base64-newline SPP transport because its released daemon route decodes each RFCOMM line before parsing the envelope. Bulk OTA chunks yield the send lock between frames without a fixed timer, checksum retransmits use normal priority, and RFCOMM client and server writes use callback-based asynchronous `fs.write` with ordered partial-write loops. Every RPC frame awaits completion before releasing the send lock, and a connection or fd change rejects the captured write.
 - **Encryption helpers live in one place** (`server/utils/encryption.ts`); don't roll your own.
+- **RPC CRC32 is IEEE CRC32 with the reflected `0xedb88320` polynomial.** The shared lookup table avoids per-bit work during OTA and artwork transfer. Keep golden checksum and envelope tests independent of the encoder so compatibility regressions cannot pass through matching encoder/decoder changes.
 
 ## ANTI-PATTERNS
 
@@ -120,7 +121,7 @@ just connector-api      # bun install + tsc check + vite build, in src/
 just test
 
 # Lint
-just lint               # pre-commit run --all-files
+just lint               # TypeScript checks including unused locals and parameters
 
 # Cross-arch QEMU helper (registers binfmt for non-arm64 hosts)
 just docker-qemu
@@ -178,3 +179,5 @@ Windows state belongs under `%LOCALAPPDATA%\\Nocturne\\Connector`; the per-user 
 - The image generator originates from `gitlab.com/raspi-alpine/builder` — see `resources/` and `build.sh` for the bridging glue.
 - Pi 1, Pi 2, Pi Zero 1 are NOT supported (no onboard Wi-Fi or wrong arch). Documented in README.
 - `package.json` in `src/` is the source of truth for the runtime stack. The repo root has no `package.json` — keep it that way; the runtime IS the `src/` subtree.
+
+Legacy OTA download bytes stream into a unique partial file and replace the completed package only after EOF/Content-Length verification. The live legacy RPC path awaits streamed MD5 hashing; the synchronous compatibility method reads bounded chunks. Both OTA implementations share `server/utils/file-io.ts` for partial-write handling. Bluetooth refresh/scan failures must remain visible without erasing previously known device/auth state. Expected missing optional files may fall back; unexpected I/O errors must be logged. Client WebSocket subscribers are isolated so one thrown callback cannot prevent delivery to the rest.

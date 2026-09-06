@@ -21,6 +21,8 @@ function timestamp(): string {
   return new Date().toISOString();
 }
 
+let logWriteFailureReported = false;
+
 function writeRotatingLog(line: string): void {
   if (!logFile) return;
   try {
@@ -35,8 +37,12 @@ function writeRotatingLog(line: string): void {
       renameSync(logFile, `${logFile}.1`);
     }
     appendFileSync(logFile, `${line}\n`, { encoding: "utf8" });
-  } catch {
-    // Logging must never interrupt the connector.
+    logWriteFailureReported = false;
+  } catch (error) {
+    if (!logWriteFailureReported) {
+      logWriteFailureReported = true;
+      console.error("Unable to write the Connector log file:", error);
+    }
   }
 }
 

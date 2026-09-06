@@ -1,4 +1,4 @@
-import { createHash, createCipheriv, createDecipheriv, pbkdf2Sync, randomBytes } from "crypto";
+import { createCipheriv, createDecipheriv, pbkdf2Sync, randomBytes } from "crypto";
 
 const APP_SALT = "com.usenocturne.Nocturne.encryption.v1";
 const ITERATIONS = 100_000;

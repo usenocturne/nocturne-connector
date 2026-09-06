@@ -124,7 +124,9 @@ export class RFCOMMServer {
             this.onData?.(devicePath, Buffer.from(value));
           }
         }
-      } catch {}
+      } catch (error) {
+        if (this.connections.get(devicePath) === connection) log.warn("RFCOMM stream read failed", error);
+      }
       if (this.connections.get(devicePath) === connection) {
         this.connections.delete(devicePath);
         this.writeStates.delete(devicePath);
@@ -187,6 +189,8 @@ export class RFCOMMServer {
       const obj = await this.bus.getProxyObject("org.bluez", "/org/bluez");
       const profileManager = obj.getInterface("org.bluez.ProfileManager1");
       await profileManager.UnregisterProfile(this.profilePath);
-    } catch {}
+    } catch (error) {
+      log.warn("Unable to unregister the RFCOMM profile", error);
+    }
   }
 }

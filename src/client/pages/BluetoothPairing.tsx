@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { get, post } from "../api";
 import { useAutoRefresh, useEvent } from "../hooks/useWebSocket";
 import { BluetoothDeviceList } from "../components/BluetoothDeviceList";
@@ -48,6 +48,8 @@ export function BluetoothPairing() {
   const [pinEvent, setPinEvent] = useState<PairingPinEvent | null>(null);
   const [decisionError, setDecisionError] = useState<string | null>(null);
   const [submittingDecision, setSubmittingDecision] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const refreshGenerationRef = useRef(0);
   const [pairError, setPairError] = useState<string | null>(null);
   const [pairingAddress, setPairingAddress] = useState<string | null>(null);
   const [unpairingAddress, setUnpairingAddress] = useState<string | null>(null);
@@ -56,13 +58,22 @@ export function BluetoothPairing() {
 
   useEffect(() => {
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
+    return () => { mountedRef.current = false; refreshGenerationRef.current++; };
   }, []);
 
   const refresh = useCallback(async () => {
-    try { setStatus(await get("/api/bluetooth/status")); } catch {}
-    try { setDevices((await get("/api/bluetooth/devices")).devices ?? []); } catch {}
-    try { setConnections((await get("/api/bluetooth/connections")).connections ?? []); } catch {}
+    const generation = ++refreshGenerationRef.current;
+    const [statusResult, devicesResult, connectionsResult] = await Promise.allSettled([
+      get("/api/bluetooth/status"),
+      get("/api/bluetooth/devices"),
+      get("/api/bluetooth/connections"),
+    ]);
+    if (!mountedRef.current || generation !== refreshGenerationRef.current) return;
+    if (statusResult.status === "fulfilled") setStatus(statusResult.value);
+    if (devicesResult.status === "fulfilled") setDevices(devicesResult.value.devices ?? []);
+    if (connectionsResult.status === "fulfilled") setConnections(connectionsResult.value.connections ?? []);
+    const failed = [statusResult, devicesResult, connectionsResult].some((result) => result.status === "rejected");
+    setRefreshError(failed ? "Unable to refresh Bluetooth information. Showing the last available state." : null);
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
@@ -131,12 +142,20 @@ export function BluetoothPairing() {
           if (!mountedRef.current) break;
           try {
             setDevices((await get("/api/bluetooth/devices")).devices ?? []);
-          } catch {}
+          } catch (error) {
+            if (mountedRef.current) setRefreshError(error instanceof Error ? error.message : String(error));
+          }
         }
-        await post("/api/bluetooth/stop-scan");
-        if (mountedRef.current) await refresh();
-      } catch {}
-      if (mountedRef.current) setScanning(false);
+      } catch (error) {
+        if (mountedRef.current) setPairError(error instanceof Error ? error.message : String(error));
+      } finally {
+        try {
+          await post("/api/bluetooth/stop-scan");
+        } catch (error) {
+          if (mountedRef.current) setPairError(error instanceof Error ? error.message : String(error));
+        }
+        if (mountedRef.current) { await refresh(); setScanning(false); }
+      }
       return;
     }
 
@@ -158,16 +177,18 @@ export function BluetoothPairing() {
         ) break;
         try {
           setDevices((await get("/api/bluetooth/devices")).devices ?? []);
-        } catch {}
+        } catch (error) {
+          if (mountedRef.current) setRefreshError(error instanceof Error ? error.message : String(error));
+        }
       }
     } catch (error) {
-      console.error("Bluetooth scan failed:", error);
+      if (mountedRef.current) setPairError(error instanceof Error ? error.message : String(error));
     } finally {
       if (scanGeneration === windowsScanGenerationRef.current) {
         try {
           await post("/api/bluetooth/stop-scan");
         } catch (error) {
-          console.error("Unable to stop Bluetooth scan:", error);
+          if (mountedRef.current) setPairError(error instanceof Error ? error.message : String(error));
         }
         if (mountedRef.current) await refresh();
         if (mountedRef.current) setScanning(false);
@@ -179,14 +200,14 @@ export function BluetoothPairing() {
     if (isWindows && (pairingAddress || unpairingAddress)) return;
     setPairError(null);
     if (isWindows) setPairingAddress(address);
-    if (isWindows) {
-      windowsScanGenerationRef.current++;
-      setScanning(false);
-      await post("/api/bluetooth/stop-scan").catch(() => undefined);
-    }
     try {
+      if (isWindows) {
+        windowsScanGenerationRef.current++;
+        setScanning(false);
+        await post("/api/bluetooth/stop-scan");
+      }
       await post(`/api/bluetooth/pair/${address}`);
-      await post(`/api/bluetooth/trust/${address}`).catch(() => undefined);
+      await post(`/api/bluetooth/trust/${address}`);
       await refresh();
     } catch (error) {
       if (isWindows) setPairingAddress(null);
@@ -246,6 +267,12 @@ export function BluetoothPairing() {
         </div>
       </div>
 
+      {refreshError && (
+        <Alert variant="destructive" className="mb-6">
+          <AlertDescription>{refreshError}</AlertDescription>
+        </Alert>
+      )}
+
       {pairError && (
         <Alert variant="destructive" className="mb-6">
           <AlertDescription>{pairError}</AlertDescription>
@@ -287,7 +314,9 @@ export function BluetoothPairing() {
             ? pairDevice
             : async (addr) => {
                 await post(`/api/bluetooth/pair/${addr}`);
-                await post(`/api/bluetooth/trust/${addr}`).catch(() => undefined);
+                await post(`/api/bluetooth/trust/${addr}`).catch((error) => {
+                  setPairError(error instanceof Error ? error.message : String(error));
+                });
                 refresh();
               }}
           onUnpair={isWindows

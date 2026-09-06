@@ -207,7 +207,7 @@ export class BlueZAdapter {
   }
 
   async startDiscovery(): Promise<void> {
-    if (!this.adapter) return;
+    if (!this.adapter) throw new Error("Bluetooth adapter is unavailable");
     try {
       try {
         await this.adapter.SetDiscoveryFilter({
@@ -215,11 +215,14 @@ export class BlueZAdapter {
           DuplicateData: { value: true, type: "b" },
           RSSI: { value: -100, type: "n" },
         });
-      } catch {}
+      } catch (error) {
+        log.debug("Custom discovery filter unavailable; using adapter defaults", error);
+      }
       await this.adapter.StartDiscovery();
       log.info("Discovery started (Transport=auto, DuplicateData=true, RSSI≥-100)");
     } catch (err) {
       log.error(`Failed to start discovery: ${err}`);
+      throw err;
     }
   }
 
@@ -227,7 +230,10 @@ export class BlueZAdapter {
     if (!this.adapter) return;
     try {
       await this.adapter.StopDiscovery();
-    } catch {}
+    } catch (error) {
+      log.warn("Unable to stop Bluetooth discovery", error);
+      throw error;
+    }
   }
 
   async getDevices(): Promise<BluetoothDevice[]> {

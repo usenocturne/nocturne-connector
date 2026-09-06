@@ -8,10 +8,7 @@ import type {
   RFCOMMClientLike,
   RFCOMMServerLike,
 } from "../../services/bluetooth-service";
-import { createLogger } from "../../utils/logger";
 import type { HostBridgeClient } from "../host-bridge";
-
-const log = createLogger("WindowsBluetooth");
 
 interface HostBluetoothStatus {
   powered: boolean;
@@ -443,8 +440,4 @@ function isBluetoothStatus(value: unknown): value is HostBluetoothStatus {
     typeof value.discovering === "boolean" &&
     typeof value.address === "string"
   );
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

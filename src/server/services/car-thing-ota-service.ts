@@ -1,3 +1,4 @@
+import { writeAll } from "../utils/file-io";
 import { createHash } from "crypto";
 import { createReadStream } from "fs";
 import {
@@ -580,24 +581,5 @@ async function syncDirectory(path: string): Promise<void> {
     if (process.platform !== "win32") throw error;
   } finally {
     await directory?.close();
-  }
-}
-
-async function writeAll(
-  file: Awaited<ReturnType<typeof open>>,
-  bytes: Buffer,
-): Promise<void> {
-  let written = 0;
-  while (written < bytes.length) {
-    const result = await file.write(
-      bytes,
-      written,
-      bytes.length - written,
-      null,
-    );
-    if (result.bytesWritten === 0) {
-      throw new Error("OTA artifact write made no progress");
-    }
-    written += result.bytesWritten;
   }
 }

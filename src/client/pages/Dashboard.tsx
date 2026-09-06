@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { get } from "../api";
 import { useAutoRefresh } from "../hooks/useWebSocket";
 import { Card, CardContent } from "@/components/ui/card";
@@ -46,10 +46,16 @@ const ALL_EVENTS = [
 
 export function Dashboard() {
   const [deviceStatus, setDeviceStatus] = useState<DeviceStatus | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const [selectedDevice, setSelectedDevice] = useState<ConnectedDevice | null>(null);
 
   const refresh = useCallback(async () => {
-    try { setDeviceStatus(await get("/api/device/status")); } catch {}
+    try {
+      setDeviceStatus(await get("/api/device/status"));
+      setRefreshError(null);
+    } catch (error) {
+      setRefreshError(error instanceof Error ? error.message : String(error));
+    }
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
@@ -77,6 +83,8 @@ export function Dashboard() {
           </Button>
         </div>
       </div>
+
+      {refreshError && <p role="alert" className="mb-6 text-destructive">Unable to refresh devices: {refreshError}</p>}
 
       {hasDevices ? (
         <div className="space-y-3">

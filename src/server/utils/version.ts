@@ -1,3 +1,6 @@
+import { hasErrorCode } from "./errors";
+import { createLogger } from "./logger";
+const log = createLogger("Version");
 import { readFileSync } from "fs";
 
 let cachedVersion: string | null = null;
@@ -11,7 +14,9 @@ export function getConnectorVersion(): string {
       cachedVersion = raw;
       return raw;
     }
-  } catch {}
+  } catch (error) {
+    if (!hasErrorCode(error, "ENOENT")) log.warn("Unable to read the installed Connector version", error);
+  }
 
   const fromEnv = process.platform === "win32"
     ? process.env.NOCTURNE_CONNECTOR_VERSION ?? process.env.npm_package_version
@@ -34,7 +39,9 @@ export function getConnectorVersion(): string {
         cachedVersion = parsed.version;
         return parsed.version;
       }
-    } catch {}
+    } catch (error) {
+      if (!hasErrorCode(error, "ENOENT")) log.warn("Unable to read a Connector package version", error);
+    }
   }
 
   cachedVersion = "unknown";

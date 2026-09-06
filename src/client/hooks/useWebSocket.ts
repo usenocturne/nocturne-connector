@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { connectWebSocket, subscribe, onConnectionChange, isConnected as wsIsConnected } from "../ws";
 
 export function useEvent<T = any>(topic: string, handler: (data: T) => void) {

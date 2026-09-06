@@ -1,16 +1,16 @@
 const CRC32_POLYNOMIAL = 0xedb88320;
+const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_, byte) => {
+  let crc = byte;
+  for (let bit = 0; bit < 8; bit++) {
+    crc = (crc >>> 1) ^ ((crc & 1) ? CRC32_POLYNOMIAL : 0);
+  }
+  return crc;
+});
 
 export function crc32(data: Buffer | Uint8Array): number {
   let crc = 0xffffffff;
-  for (const byte of data) {
-    crc ^= byte;
-    for (let i = 0; i < 8; i++) {
-      if (crc & 1) {
-        crc = (crc >>> 1) ^ CRC32_POLYNOMIAL;
-      } else {
-        crc >>>= 1;
-      }
-    }
+  for (let i = 0; i < data.length; i++) {
+    crc = (crc >>> 8) ^ CRC32_TABLE[(crc ^ data[i]) & 0xff];
   }
   return (crc ^ 0xffffffff) >>> 0;
 }
@@ -31,6 +31,8 @@ export function createChunks(
 ): Buffer[] {
   const totalChunks = Math.ceil(data.length / chunkSize);
   const chunks: Buffer[] = [];
+  const idBytes = Buffer.from(messageId, "utf-8");
+  const headerLen = 1 + idBytes.length + 2 + 2 + 4 + 2;
 
   for (let i = 0; i < totalChunks; i++) {
     const start = i * chunkSize;
@@ -38,8 +40,6 @@ export function createChunks(
     const payload = data.subarray(start, end);
     const checksum = crc32(payload);
 
-    const idBytes = Buffer.from(messageId, "utf-8");
-    const headerLen = 1 + idBytes.length + 2 + 2 + 4 + 2;
     const chunk = Buffer.alloc(headerLen + payload.length);
     let offset = 0;
 
