@@ -178,6 +178,7 @@ export class AuthService {
   private authEventGeneration = 0;
   private persistRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private persistRetryAttempt = 0;
+  private persistQueue: Promise<boolean> = Promise.resolve(true);
 
   constructor(dependencies: AuthServiceDependencies = {}) {
     if (dependencies.authClient) {
@@ -275,20 +276,34 @@ export class AuthService {
   }
 
   private async restoreSession(): Promise<void> {
-    const saved = await this.readPersistedSession();
-    if (!saved) {
-      this._isInitializing = false;
-      this.notifyStateChange();
-      return;
-    }
+    await this.restoreFromStorage(0, ++this.restoreGeneration, "initial");
+  }
 
-    const generation = ++this.restoreGeneration;
-    await this.attemptRestore(saved, 0, generation, "initial");
+  private async restoreFromStorage(
+    attempt: number,
+    generation: number,
+    mode: "initial" | "runtime"
+  ): Promise<void> {
+    try {
+      const saved = await this.readPersistedSession();
+      if (this.restoreCancelled || generation !== this.restoreGeneration) return;
+      if (!saved) {
+        this.finishFailedRestore(mode);
+        return;
+      }
+      await this.attemptRestore(saved, 0, generation, mode);
+    } catch (err) {
+      if (this.restoreCancelled || generation !== this.restoreGeneration) return;
+      log.warn(`Unable to read persisted session; retaining auth state and retrying: ${err}`);
+      const delayMs = Math.min(60_000, this.restoreRetryBaseDelayMs * 2 ** Math.min(attempt, 4));
+      this.restoreRetryTimer = setTimeout(() => {
+        this.restoreRetryTimer = null;
+        void this.restoreFromStorage(attempt + 1, generation, mode);
+      }, delayMs);
+    }
   }
 
   private async readPersistedSession(): Promise<SavedSession | null> {
-    if (!existsSync(this.sessionPath)) return null;
-
     try {
       const raw = readFileSync(this.sessionPath, "utf-8");
       const parsed = JSON.parse(raw) as Partial<SavedSession> & {
@@ -297,8 +312,7 @@ export class AuthService {
       let saved: Partial<SavedSession>;
       if (typeof parsed.protected_data === "string") {
         if (!this.sessionProtector) {
-          log.warn("Persisted session is protected but no session protector is available");
-          return null;
+          throw new Error("Persisted session is protected but no session protector is available");
         }
         const decrypted = await this.sessionProtector.unprotect(parsed.protected_data);
         saved = JSON.parse(decrypted) as Partial<SavedSession>;
@@ -311,8 +325,8 @@ export class AuthService {
       }
       return { access_token: saved.access_token, refresh_token: saved.refresh_token };
     } catch (err) {
-      log.warn(`Persisted session file is unreadable; ignoring: ${err}`);
-      return null;
+      if (extractErrorCode(err) === "ENOENT") return null;
+      throw err;
     }
   }
 
@@ -320,18 +334,15 @@ export class AuthService {
     if (this.runtimeRecoveryActive || this.restoreCancelled) return;
 
     this.runtimeRecoveryActive = true;
-    const saved = await this.readPersistedSession();
-    if (!saved) {
-      this.runtimeRecoveryActive = false;
-      log.warn("Supabase signed out unexpectedly and no persisted session is available");
-      this.clearAuthenticatedState();
-      return;
-    }
-
+    const saved = this._session;
     log.warn("Supabase signed out unexpectedly; retaining local identity while restoring the session");
     this._session = null;
     const generation = ++this.restoreGeneration;
-    void this.attemptRestore(saved, 0, generation, "runtime");
+    if (saved) {
+      void this.attemptRestore(saved, 0, generation, "runtime");
+    } else {
+      void this.restoreFromStorage(0, generation, "runtime");
+    }
   }
 
   private async attemptRestore(
@@ -436,8 +447,19 @@ export class AuthService {
     }
   }
 
-  private async persistSession(retryOnFailure: boolean): Promise<boolean> {
-    if (!this._session) return false;
+  private persistSession(retryOnFailure: boolean): Promise<boolean> {
+    const generation = this.authEventGeneration;
+    this.persistQueue = this.persistQueue.then(() =>
+      this.writeCurrentSession(retryOnFailure, generation)
+    );
+    return this.persistQueue;
+  }
+
+  private async writeCurrentSession(
+    retryOnFailure: boolean,
+    generation: number
+  ): Promise<boolean> {
+    if (!this._session || generation !== this.authEventGeneration || this.restoreCancelled) return false;
     try {
       const session = JSON.stringify({
         access_token: this._session.access_token,
@@ -449,6 +471,7 @@ export class AuthService {
             protected_data: await this.sessionProtector.protect(session),
           })
         : session;
+      if (generation !== this.authEventGeneration || this.restoreCancelled) return false;
       await this.persistSessionFile(this.sessionPath, data);
       this.cancelPersistRetry();
       return true;
@@ -530,6 +553,7 @@ export class AuthService {
     } finally {
       this.explicitSignOut = false;
       this.clearAuthenticatedState();
+      await this.persistQueue;
       this.clearPersistedSession();
     }
     return { error: signOutError };

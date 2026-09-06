@@ -307,39 +307,30 @@ export class SpotifyService {
     this.authCheckAttempts++;
     try {
       const credentials = await this.dbStorage.loadCredentials(userID);
+      this.cachedCredentials = { userID, ...credentials };
+      if (this.authState.status !== "linked") {
+        this.setAuthState({ status: "linked", displayName: null });
+      }
       const needsRefresh =
         !credentials.accessTokenExpiresAt ||
         credentials.accessTokenExpiresAt.getTime() < Date.now() + 300_000;
 
       if (needsRefresh) {
         await this.refreshToken();
-      } else {
-        this.cachedCredentials = {
-          userID,
-          accessToken: credentials.accessToken,
-          refreshToken: credentials.refreshToken,
-          scope: credentials.scope,
-          tokenType: credentials.tokenType,
-          accessTokenExpiresAt: credentials.accessTokenExpiresAt,
-        };
       }
 
       const displayName = await this.getSpotifyDisplayName();
       this.authCheckAttempts = 0;
       this.resetSkippedState();
       this.setAuthState({ status: "linked", displayName });
-    } catch (err: any) {
-      const msg = err?.message ?? String(err);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("No credentials found")) {
         this.authCheckAttempts = 0;
         this.setAuthState(this.unlinkedAuthState());
         return;
       }
-      if (
-        err instanceof SpotifyAuthorizationExpiredError ||
-        msg.includes("Authorization expired") ||
-        msg.includes("invalid_grant")
-      ) {
+      if (err instanceof SpotifyAuthorizationExpiredError) {
         this.authCheckAttempts = 0;
         log.error(`Auth definitively expired: ${msg}, clearing credentials`);
         try {
@@ -358,17 +349,9 @@ export class SpotifyService {
       }
 
       const attempt = this.authCheckAttempts;
-      const maxAttempts = 8;
-      if (attempt >= maxAttempts) {
-        log.warn(
-          `Auth check failed (transient, giving up after ${attempt} attempts): ${msg}`
-        );
-        this.authCheckAttempts = 0;
-        return;
-      }
       const delayMs = Math.min(60_000, 5_000 * 2 ** Math.min(attempt - 1, 4));
       log.warn(
-        `Auth check failed (transient, attempt ${attempt}/${maxAttempts}, retry in ${delayMs / 1000}s): ${msg}`
+        `Auth check failed (transient, attempt ${attempt}, retry in ${delayMs / 1000}s): ${msg}`
       );
       this.authCheckRetryTimer = setTimeout(() => {
         this.authCheckRetryTimer = null;
@@ -546,7 +529,9 @@ export class SpotifyService {
     let hasRetriedInvalidGrant = false;
 
     while (true) {
-      let refreshToken = this.cachedCredentials?.refreshToken;
+      let refreshToken = this.cachedCredentials?.userID === userID
+        ? this.cachedCredentials.refreshToken
+        : undefined;
       if (!refreshToken) {
         const stored = await this.dbStorage.loadCredentials(userID);
         refreshToken = stored.refreshToken;
@@ -578,7 +563,7 @@ export class SpotifyService {
 
       const data = await res!.json();
 
-      if (data.error === "invalid_grant") {
+      if (res.status === 400 && data.error === "invalid_grant") {
         if (!hasRetriedInvalidGrant) {
           log.warn("Got invalid_grant, clearing cache and retrying with fresh credentials from database");
           hasRetriedInvalidGrant = true;
@@ -589,7 +574,20 @@ export class SpotifyService {
         throw new SpotifyAuthorizationExpiredError();
       }
 
+      if (!res.ok) {
+        throw new Error(`Spotify token refresh failed: HTTP ${res.status}`);
+      }
       if (data.error) throw new Error(data.error_description || data.error);
+      if (
+        typeof data.access_token !== "string" || data.access_token.length === 0 ||
+        typeof data.token_type !== "string" || data.token_type.length === 0 ||
+        typeof data.expires_in !== "number" || !Number.isFinite(data.expires_in) ||
+        data.expires_in <= 0 ||
+        (data.refresh_token !== undefined &&
+          (typeof data.refresh_token !== "string" || data.refresh_token.length === 0))
+      ) {
+        throw new Error("Invalid Spotify token refresh response");
+      }
 
       const expiresAt = new Date(Date.now() + data.expires_in * 1000);
       const newRefreshToken = data.refresh_token || refreshToken;

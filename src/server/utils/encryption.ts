@@ -25,8 +25,13 @@ export function encrypt(plaintext: string, userID: string): string {
   return combined.toString("base64");
 }
 
+function canonicalUserID(userID: string): string {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userID)
+    ? userID.toUpperCase()
+    : userID;
+}
+
 export function decrypt(ciphertext: string, userID: string): string {
-  const key = deriveKey(userID);
   const combined = Buffer.from(ciphertext, "base64");
 
   if (combined.length < IV_LENGTH + TAG_LENGTH) {
@@ -37,13 +42,17 @@ export function decrypt(ciphertext: string, userID: string): string {
   const tag = combined.subarray(combined.length - TAG_LENGTH);
   const encrypted = combined.subarray(IV_LENGTH, combined.length - TAG_LENGTH);
 
-  const decipher = createDecipheriv("aes-256-gcm", key, nonce);
-  decipher.setAuthTag(tag);
-
-  const decrypted = Buffer.concat([
-    decipher.update(encrypted),
-    decipher.final(),
-  ]);
-
-  return decrypted.toString("utf-8");
+  const canonicalID = canonicalUserID(userID);
+  const candidates = new Set([canonicalID, userID, userID.toLowerCase()]);
+  let lastError: unknown;
+  for (const candidate of candidates) {
+    try {
+      const decipher = createDecipheriv("aes-256-gcm", deriveKey(candidate), nonce);
+      decipher.setAuthTag(tag);
+      return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf-8");
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
 }

@@ -218,7 +218,7 @@ describe("AuthService", () => {
     authClient.emit("TOKEN_REFRESHED", session("access-2", "refresh-2"));
 
     await waitFor(() => JSON.parse(readFileSync(path, "utf-8")).refresh_token === "refresh-2");
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(readdirSync(join(path, "..")).filter((name) => name.startsWith("auth-session.json.tmp."))).toEqual([]);
   });
 
@@ -387,6 +387,125 @@ describe("AuthService", () => {
     expect(service.getStatus().isInitializing).toBeTrue();
     await waitFor(() => service.getStatus().authenticated);
     expect(service.getStatus().isInitializing).toBeFalse();
+  });
+
+  test("retries protected session reads while the Windows bridge is unavailable at startup", async () => {
+    const path = await sessionPath();
+    const protector = new FakeSessionProtector();
+    writeFileSync(path, JSON.stringify({
+      protected_data: await protector.protect(JSON.stringify({
+        access_token: "saved-access", refresh_token: "saved-refresh",
+      })),
+    }));
+    const authClient = new FakeAuthClient();
+    let reads = 0;
+    const service = new AuthService({
+      authClient,
+      sessionPath: path,
+      restoreRetryBaseDelayMs: 1,
+      sessionProtector: {
+        protect: (value) => protector.protect(value),
+        unprotect: async (value) => {
+          if (++reads === 1) throw new Error("Windows host bridge is disconnected");
+          return protector.unprotect(value);
+        },
+      },
+    });
+    services.push(service);
+    const observedUsers: (string | null)[] = [];
+    service.onAuthStateChange((currentUser) => observedUsers.push(currentUser?.id ?? null));
+    authClient.sessionResults.push(success(session("access-2", "refresh-2")));
+
+    await service.initialize();
+    expect(service.getStatus().isInitializing).toBeTrue();
+    await waitFor(() => service.getStatus().authenticated);
+    expect(reads).toBe(2);
+    expect(observedUsers).not.toContain(null);
+  });
+
+  test("serializes protected token writes so an older rotation cannot overwrite the latest", async () => {
+    const path = await sessionPath();
+    const authClient = new FakeAuthClient();
+    const protector = new FakeSessionProtector();
+    const pendingProtection = deferred<string>();
+    let protections = 0;
+    const service = new AuthService({
+      authClient,
+      sessionPath: path,
+      sessionProtector: {
+        unprotect: (value) => protector.unprotect(value),
+        protect: async (value) => {
+          if (++protections === 2) return pendingProtection.promise;
+          return protector.protect(value);
+        },
+      },
+    });
+    services.push(service);
+    authClient.sessionResults.push(success(session("access-1", "refresh-1")));
+    await service.setSessionFromTokens("pair-access", "pair-refresh");
+    authClient.emit("TOKEN_REFRESHED", session("access-2", "refresh-2"));
+    await waitFor(() => protections === 2);
+    authClient.emit("TOKEN_REFRESHED", session("access-3", "refresh-3"));
+    await Bun.sleep(5);
+    expect(protections).toBe(2);
+    pendingProtection.resolve(await protector.protect(JSON.stringify({
+      access_token: "access-2", refresh_token: "refresh-2",
+    })));
+    await waitFor(() => protections === 3);
+    await Bun.sleep(5);
+    const saved = JSON.parse(await protector.unprotect(JSON.parse(readFileSync(path, "utf8")).protected_data));
+    expect(saved.refresh_token).toBe("refresh-3");
+  });
+
+  test("sign-out waits for an in-flight write before deleting the saved session", async () => {
+    const path = await sessionPath();
+    const authClient = new FakeAuthClient();
+    const pendingWrite = deferred<void>();
+    let writes = 0;
+    const service = new AuthService({
+      authClient,
+      sessionPath: path,
+      persistSessionFile: async (target, data) => {
+        if (++writes === 2) await pendingWrite.promise;
+        writeFileSync(target, data);
+      },
+    });
+    services.push(service);
+    authClient.sessionResults.push(success(session("access-1", "refresh-1")));
+    await service.setSessionFromTokens("pair-access", "pair-refresh");
+    authClient.emit("TOKEN_REFRESHED", session("access-2", "refresh-2"));
+    await waitFor(() => writes === 2);
+    const signingOut = service.signOut();
+    pendingWrite.resolve();
+    await signingOut;
+    expect(existsSync(path)).toBeFalse();
+    expect(service.getStatus().authenticated).toBeFalse();
+  });
+
+  test("runtime recovery uses the latest rotation when its disk write failed", async () => {
+    const path = await sessionPath();
+    const authClient = new FakeAuthClient();
+    let writes = 0;
+    const service = new AuthService({
+      authClient,
+      sessionPath: path,
+      persistSessionFile: (target, data) => {
+        if (++writes === 2) throw new Error("Windows bridge unavailable");
+        writeFileSync(target, data);
+      },
+    });
+    services.push(service);
+    authClient.sessionResults.push(
+      success(session("access-1", "refresh-1")),
+      success(session("access-3", "refresh-3"))
+    );
+    await service.setSessionFromTokens("pair-access", "pair-refresh");
+    authClient.emit("TOKEN_REFRESHED", session("access-2", "refresh-2"));
+    await waitFor(() => writes === 2);
+    authClient.emit("SIGNED_OUT", null);
+    await waitFor(() => authClient.setSessionCalls.length === 2);
+    expect(authClient.setSessionCalls[1]?.refresh_token).toBe("refresh-2");
+    await waitFor(() => service.session?.refresh_token === "refresh-3");
   });
 
   test("explicit sign-out is local and clears persisted state", async () => {
