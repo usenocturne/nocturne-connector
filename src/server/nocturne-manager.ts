@@ -245,6 +245,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   }
 
   private handleNewConnection(devicePath: string, address: string): void {
+    this.connections.get(devicePath)?.rpcClient.cleanup();
     const isOutbound = devicePath.startsWith("rfcomm-client:");
     const rpcClient = new RPCClient(devicePath, "base64-newline", {
       preserveConnectionWireFormat: this.platform === "win32",
@@ -252,6 +253,9 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
     rpcClient.setDelegate(this);
     rpcClient.setSocket({
       write: (data: Buffer | Uint8Array) => {
+        if (this.connections.get(devicePath)?.rpcClient !== rpcClient) {
+          return Promise.reject(new Error("RPC connection was replaced"));
+        }
         if (isOutbound) {
           return this.bluetoothService.rfcommOutbound.write(Buffer.from(data));
         }
@@ -266,7 +270,11 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
 
     this.broadcastToWebSocket("device.connected", { devicePath, address });
 
-    setTimeout(() => this.sendInitialPing(devicePath), 500);
+    setTimeout(() => {
+      if (this.connections.get(devicePath)?.rpcClient === rpcClient) {
+        void this.sendInitialPing(devicePath);
+      }
+    }, 500);
   }
 
   private handleDisconnection(devicePath: string): void {
@@ -297,6 +305,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
       const deviceInfo = normalizeDeviceInfo(
         await conn.rpcClient.call("device.info", {}),
       );
+      if (this.connections.get(connectionID) !== conn) return;
       conn.deviceInfo = deviceInfo;
 
       log.info(`Initial ping sent to ${connectionID}`);

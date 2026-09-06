@@ -40,6 +40,7 @@ class LoopbackDaemon implements RPCClientDelegate {
   });
   readonly calls: Array<{ method: string; params: unknown }> = [];
   readonly events: Array<{ topic: string; data: unknown }> = [];
+  heldProgress: Promise<void> | null = null;
   private connectorDataHandler: ((data: Buffer) => void) | null = null;
 
   constructor() {
@@ -66,6 +67,7 @@ class LoopbackDaemon implements RPCClientDelegate {
     params: unknown,
   ): Promise<{ result?: unknown; error?: string }> {
     this.calls.push({ method, params });
+    if (method === "ota.download_progress") await this.heldProgress;
     if (method === "device.info") {
       return {
         result: {
@@ -180,6 +182,48 @@ function fakeBluetoothService(daemon: LoopbackDaemon): {
 }
 
 describe("NocturneManager Car Thing OTA", () => {
+  test("replacing a route rejects pending calls and prevents stale OTA writes", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "nocturne-manager-replace-"));
+    const daemon = new LoopbackDaemon();
+    const bluetooth = fakeBluetoothService(daemon);
+    const manager = new NocturneManager({
+      bluetoothService: bluetooth.service,
+      carThingOtaService: new CarThingOTAService({ stateDir }),
+    });
+    let releaseProgress = () => {};
+    daemon.heldProgress = new Promise<void>((resolve) => { releaseProgress = resolve; });
+    const clients: RPCClient[] = [];
+    try {
+      await manager.initializeOffline();
+      await bluetooth.service.connect(DEVICE_ADDRESS, 2);
+      const stale = manager["connections"].get(`rfcomm-client:${DEVICE_ADDRESS}`)!.rpcClient;
+      clients.push(stale);
+      let pendingError: unknown;
+      const pending = stale.call("ota.download_progress", { percent: 50 }).catch((error) => {
+        pendingError = error;
+      });
+      await waitFor(() => callCount(daemon, "ota.download_progress") === 1);
+      await bluetooth.service.connect(DEVICE_ADDRESS, 2);
+      const replacement = manager["connections"].get(`rfcomm-client:${DEVICE_ADDRESS}`)!.rpcClient;
+      clients.push(replacement);
+      await waitFor(() => pendingError !== undefined);
+      await pending;
+      expect(pendingError).toBeInstanceOf(Error);
+      expect((pendingError as Error).message).toBe("Connection closed");
+      const writesBefore = daemon.events.length;
+      await expect(stale.sendEvent("ota.package_ready", { updateId: "stale" }))
+        .rejects.toThrow("closed connection");
+      expect(daemon.events.length).toBe(writesBefore);
+      await expect(replacement.call("ping", {})).resolves.toEqual({});
+    } finally {
+      releaseProgress();
+      bluetooth.client.disconnect();
+      for (const client of clients) client.cleanup();
+      daemon.client.cleanup();
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
   test("prefetches every asset before package-ready and resumes offline", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "nocturne-manager-ota-"));
     const daemon = new LoopbackDaemon();
@@ -263,7 +307,6 @@ describe("NocturneManager Car Thing OTA", () => {
       expect(eventCount(daemon, "ota.package_ready")).toBe(0);
       expect(rangeHeaderSeen).toBe(false);
 
-      bluetooth.client.disconnect();
       await bluetooth.service.connect(DEVICE_ADDRESS, 2);
       await waitFor(() => eventCount(daemon, "app.ready") === 2);
 
