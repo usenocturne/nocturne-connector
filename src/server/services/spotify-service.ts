@@ -27,6 +27,7 @@ import {
 import { dirname } from "path";
 
 const log = createLogger("SpotifyService");
+const WAKE_DEVICES_INTERVAL_MS = 10_000;
 
 export const LRCLIB_USER_AGENT = SPOTIFY_USER_AGENT;
 
@@ -168,6 +169,7 @@ export class SpotifyService {
 
   private spclientEndpoint: string | null = null;
   private _activeDeviceId: string | null = null;
+  private lastWakeDevicesAt = 0;
   private _spotifyUserId: string | null = null;
 
   constructor(
@@ -1126,6 +1128,22 @@ export class SpotifyService {
     }
 
     return this.transformConnectState(state);
+  }
+
+  async wakeDevices(): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastWakeDevicesAt < WAKE_DEVICES_INTERVAL_MS) return;
+    this.lastWakeDevicesAt = now;
+
+    try {
+      const accessToken = await this.getValidAccessToken();
+      const spclient = this.spclientEndpoint || "gue1-spclient.spotify.com";
+      const res = await fetch(`https://${spclient}/connect-state/v1/cluster/wake-devices`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!res.ok) log.debug(`Spotify wake-devices returned ${res.status}`);
+    } catch (error) { log.debug("Spotify wake-devices request failed", error); }
   }
 
   async handleGetDevices(): Promise<any> {
