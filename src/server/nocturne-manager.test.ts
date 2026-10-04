@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   carThingOtaRequestParams,
   carThingOtaRequestVersions,
+  deviceTimeResponse,
   normalizeDeviceInfo,
 } from "./nocturne-manager";
 
@@ -41,6 +42,15 @@ describe("device info", () => {
     ).toMatchObject({
       imageVersion: "4.1.1",
       serialNumber: "SERIAL",
+    });
+  });
+});
+
+describe("device time", () => {
+  test("reports millisecond Unix time alongside the legacy UTC datetime", () => {
+    expect(deviceTimeResponse(new Date(Date.UTC(2026, 9, 4, 0, 36, 55, 789)))).toMatchObject({
+      datetime: "2026-10-04 00:36:55",
+      timestamp_ms: 1_791_074_215_789,
     });
   });
 });

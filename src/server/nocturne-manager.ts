@@ -656,11 +656,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
       }
 
       if (method === "device.time.get") {
-        const now = new Date();
-        const pad = (n: number) => String(n).padStart(2, "0");
-        const datetime = `${now.getUTCFullYear()}-${pad(now.getUTCMonth() + 1)}-${pad(now.getUTCDate())} ${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}:${pad(now.getUTCSeconds())}`;
-        const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-        return { result: { datetime, time } };
+        return { result: deviceTimeResponse(new Date()) };
       }
 
       log.warn(`Unknown method: ${method}`);
@@ -1231,6 +1227,19 @@ export function carThingOtaRequestParams(
     targetKind: otaKindParam(
       stringParam(params?.targetKind) ?? stringParam(params?.target_kind),
     ),
+  };
+}
+
+export function deviceTimeResponse(now: Date): {
+  datetime: string;
+  time: string;
+  timestamp_ms: number;
+} {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return {
+    datetime: `${now.getUTCFullYear()}-${pad(now.getUTCMonth() + 1)}-${pad(now.getUTCDate())} ${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}:${pad(now.getUTCSeconds())}`,
+    time: `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`,
+    timestamp_ms: now.getTime(),
   };
 }
 
