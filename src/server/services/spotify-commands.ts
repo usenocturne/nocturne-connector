@@ -46,7 +46,7 @@ export class SpotifyCommandDispatcher {
     this.register("spotify.player.queue.add", (p) => s.handleAddToQueue(p));
     this.register("spotify.devices", () => {
       void s.wakeDevices();
-      return s.handleGetDevices();
+      return s.handleListDevices();
     });
     this.register("spotify.player.transfer", (p) => s.handleTransferPlayback(p));
 

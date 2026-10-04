@@ -16,6 +16,7 @@ import {
   splitSpotifyLibraryTrackReferences,
   writeSpotifyLocalTracks,
 } from "./spotify-collection";
+import { SpotifyZeroconf } from "./spotify-zeroconf";
 import {
   existsSync,
   mkdirSync,
@@ -28,6 +29,8 @@ import { dirname } from "path";
 
 const log = createLogger("SpotifyService");
 const WAKE_DEVICES_INTERVAL_MS = 10_000;
+const LOCAL_DEVICE_ONLINE_TIMEOUT_MS = 12_000;
+const LOCAL_DEVICE_POLL_INTERVAL_MS = 500;
 
 export const LRCLIB_USER_AGENT = SPOTIFY_USER_AGENT;
 
@@ -171,6 +174,7 @@ export class SpotifyService {
   private _activeDeviceId: string | null = null;
   private lastWakeDevicesAt = 0;
   private _spotifyUserId: string | null = null;
+  zeroconf = new SpotifyZeroconf();
 
   constructor(
     dbStorage: SpotifyDatabaseStorage,
@@ -1207,12 +1211,46 @@ export class SpotifyService {
     return result;
   }
 
-  async handleTransferPlayback(params: any): Promise<any> {
+  async handleListDevices(): Promise<any> {
+    void this.zeroconf.refresh();
+    const result = await this.handleGetDevices();
+    for (const device of this.zeroconf.list()) {
+      if (result.devices[device.id]) continue;
+      result.devices[device.id] = {
+        device_id: device.id,
+        name: device.name,
+        device_type: device.type,
+        is_active: false,
+      };
+    }
+    return result;
+  }
+
+  private async signInLocalDevice(deviceId: string): Promise<void> {
+    const { devices } = await this.handleGetDevices();
+    if (devices[deviceId]) return;
+
     const accessToken = await this.getValidAccessToken();
-    const spclient = this.spclientEndpoint || "gue1-spclient.spotify.com";
+    const username = (await this.getSpotifyUserId()) ?? "";
+    await this.zeroconf.activate(deviceId, accessToken, username);
+
+    const deadline = Date.now() + LOCAL_DEVICE_ONLINE_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      await Bun.sleep(LOCAL_DEVICE_POLL_INTERVAL_MS);
+      const { devices } = await this.handleGetDevices();
+      if (devices[deviceId]) return;
+    }
+    throw new Error("Spotify Connect device did not come online after sign-in");
+  }
+
+  async handleTransferPlayback(params: any): Promise<any> {
     const deviceIds = (params.deviceIds || params.device_ids || []).filter(Boolean);
     const targetId = deviceIds[0] || this._activeDeviceId;
     if (!targetId) throw new Error("No target device");
+    if (this.zeroconf.get(targetId)) await this.signInLocalDevice(targetId);
+
+    const accessToken = await this.getValidAccessToken();
+    const spclient = this.spclientEndpoint || "gue1-spclient.spotify.com";
 
     const res = await fetch(
       `https://${spclient}/connect-state/v1/connect/transfer/from/_/to/${targetId}`,
