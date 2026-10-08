@@ -446,7 +446,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
       skipped: spotifySkipped,
     });
 
-    await this.broadcastToDevices("app.ready", {
+    const appReadyPayload: Record<string, unknown> = {
       platform: "web",
       timestamp: Date.now(),
       spotifySkipped,
@@ -458,7 +458,13 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
         abbreviation: tzAbbr,
         isDaylightSavingTime: isDST,
       },
-    });
+    };
+
+    if (this.platform === "win32") {
+      appReadyPayload.connectorPlatform = "windows";
+    }
+
+    await this.broadcastToDevices("app.ready", appReadyPayload);
 
     await this.systemMediaService?.replayLatest();
 

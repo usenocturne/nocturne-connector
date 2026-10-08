@@ -46,6 +46,53 @@ describe("device info", () => {
   });
 });
 
+describe("sendAppReady", () => {
+  test("includes connectorPlatform: 'windows' on win32 while keeping platform: 'web'", async () => {
+    const { NocturneManager } = await import("./nocturne-manager");
+    const manager = new NocturneManager({ platform: "win32" });
+
+    let broadcastTopic = "";
+    let broadcastData: any = null;
+    (manager as any).broadcastToDevices = async (topic: string, data: any) => {
+      if (topic === "app.ready") {
+        broadcastTopic = topic;
+        broadcastData = data;
+      }
+    };
+
+    await (manager as any).sendAppReady();
+
+    expect(broadcastTopic).toBe("app.ready");
+    expect(broadcastData).toMatchObject({
+      platform: "web",
+      connectorPlatform: "windows",
+    });
+    expect(typeof broadcastData.timestamp).toBe("number");
+    expect(typeof broadcastData.datetime).toBe("string");
+    expect(typeof broadcastData.time).toBe("string");
+    expect(typeof broadcastData.timezone).toBe("object");
+  });
+
+  test("does not include connectorPlatform on non-Windows platforms (e.g. linux)", async () => {
+    const { NocturneManager } = await import("./nocturne-manager");
+    const manager = new NocturneManager({ platform: "linux" });
+
+    let broadcastData: any = null;
+    (manager as any).broadcastToDevices = async (topic: string, data: any) => {
+      if (topic === "app.ready") {
+        broadcastData = data;
+      }
+    };
+
+    await (manager as any).sendAppReady();
+
+    expect(broadcastData).toMatchObject({
+      platform: "web",
+    });
+    expect(broadcastData.connectorPlatform).toBeUndefined();
+  });
+});
+
 describe("device time", () => {
   test("reports millisecond Unix time alongside the legacy UTC datetime", () => {
     expect(deviceTimeResponse(new Date(Date.UTC(2026, 9, 4, 0, 36, 55, 789)))).toMatchObject({
