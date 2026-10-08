@@ -211,8 +211,8 @@ impl WindowsMediaState {
             }
             if self.is_enabled() {
                 self.refresh(&bridge, &manager).await;
-                self.refresh_volume(&bridge);
             }
+            self.refresh_volume(&bridge);
             sleep(POLL_INTERVAL).await;
         }
     }
@@ -524,7 +524,7 @@ impl WindowsMediaState {
 
     pub async fn dispatch(
         &self,
-        _bridge: &BridgeServer,
+        bridge: &BridgeServer,
         method: &str,
         params: Value,
     ) -> Result<Value, String> {
@@ -555,7 +555,6 @@ impl WindowsMediaState {
                     inner.timeline_anchor = None;
                     inner.last_artwork = None;
                     inner.last_artwork_signature = None;
-                    inner.volume_percent = None;
                 }
                 Ok(json!({ "status": "ok" }))
             }
@@ -1053,7 +1052,7 @@ fn read_volume_info() -> Result<(u8, bool), String> {
         unsafe { endpoint.GetMasterVolumeLevelScalar() }.map_err(|error| error.to_string())?;
     let muted = unsafe { endpoint.GetMute() }
         .map(|m| m.as_bool())
-        .unwrap_or(false);
+        .map_err(|error| error.to_string())?;
     Ok(((scalar.clamp(0.0, 1.0) * 100.0).round() as u8, muted))
 }
 
@@ -1065,7 +1064,7 @@ fn set_volume_percent(percent: u8) -> Value {
             .map_err(|error| error.to_string())?;
         let muted = unsafe { endpoint.GetMute() }
             .map(|m| m.as_bool())
-            .unwrap_or(false);
+            .map_err(|error| error.to_string())?;
         Ok((percent, muted))
     })();
     match result {
@@ -1086,7 +1085,7 @@ fn adjust_volume_percent(delta: i32) -> Value {
             .map_err(|error| error.to_string())?;
         let muted = unsafe { endpoint.GetMute() }
             .map(|m| m.as_bool())
-            .unwrap_or(false);
+            .map_err(|error| error.to_string())?;
         Ok((next_pct, muted))
     })();
     match result {
@@ -1100,7 +1099,7 @@ fn toggle_mute(explicit: Option<bool>) -> Value {
         let endpoint = endpoint_volume()?;
         let current_mute = unsafe { endpoint.GetMute() }
             .map(|m| m.as_bool())
-            .unwrap_or(false);
+            .map_err(|error| error.to_string())?;
         let target_mute = explicit.unwrap_or(!current_mute);
         unsafe { endpoint.SetMute(target_mute, std::ptr::null()) }
             .map_err(|error| error.to_string())?;
@@ -1126,7 +1125,7 @@ fn step_volume(delta: f32) -> Value {
         let pct = (next * 100.0).round() as u8;
         let muted = unsafe { endpoint.GetMute() }
             .map(|m| m.as_bool())
-            .unwrap_or(false);
+            .map_err(|error| error.to_string())?;
         Ok((pct, muted))
     })();
     match result {

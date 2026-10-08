@@ -96,6 +96,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   private carThingRangeTasks = new Map<string, AbortController>();
   private carThingOtaGeneration = 0;
   private pendingHostVolumePercent: number | null = null;
+  private pendingHostMuted: boolean | null = null;
   private hostVolumeReportTask: Promise<void> | null = null;
   private systemMediaModeTask: Promise<void> = Promise.resolve();
   private readonly platform: NodeJS.Platform;
@@ -122,8 +123,8 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
     this.systemMediaService = dependencies.hostBridge
       ? new SystemMediaService(dependencies.hostBridge, {
           sendEvent: (topic, data) => this.broadcastToDevices(topic, data),
-          sendVolume: (volumePercent) =>
-            this.queueHostVolumeUpdate(volumePercent),
+          sendVolume: (volumePercent, muted) =>
+            this.queueHostVolumeUpdate(volumePercent, muted),
         }, dependencies.systemMediaPreferenceStore)
       : null;
 
@@ -531,13 +532,19 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
     }
   }
 
-  private queueHostVolumeUpdate(volumePercent: number): Promise<void> {
+  private queueHostVolumeUpdate(volumePercent: number, muted?: boolean): Promise<void> {
     this.pendingHostVolumePercent = volumePercent;
+    if (typeof muted === "boolean") {
+      this.pendingHostMuted = muted;
+    }
     if (!this.hostVolumeReportTask) {
       this.hostVolumeReportTask = this.flushHostVolumeUpdates().finally(() => {
         this.hostVolumeReportTask = null;
         if (this.pendingHostVolumePercent !== null) {
-          void this.queueHostVolumeUpdate(this.pendingHostVolumePercent);
+          void this.queueHostVolumeUpdate(
+            this.pendingHostVolumePercent,
+            this.pendingHostMuted ?? undefined,
+          );
         }
       });
     }
@@ -547,12 +554,18 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   private async flushHostVolumeUpdates(): Promise<void> {
     while (this.pendingHostVolumePercent !== null) {
       const volumePercent = this.pendingHostVolumePercent;
+      const muted = this.pendingHostMuted;
       this.pendingHostVolumePercent = null;
+      this.pendingHostMuted = null;
       for (const [id, conn] of this.connections) {
         try {
-          await conn.rpcClient.call("device.volume.update", {
+          const payload: Record<string, unknown> = {
             volume_percent: volumePercent,
-          });
+          };
+          if (typeof muted === "boolean") {
+            payload.muted = muted;
+          }
+          await conn.rpcClient.call("device.volume.update", payload);
         } catch (err) {
           log.warn(`Host volume update to ${id} failed: ${errorMessage(err)}`);
         }

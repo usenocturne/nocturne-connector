@@ -225,7 +225,11 @@ export class SystemMediaService {
     if (explicit !== undefined && typeof explicit !== "boolean") {
       return { status: "unsupported" };
     }
-    const response = await this.hostBridge.call<unknown>("volume.toggleMute", { muted: explicit });
+    const params: Record<string, unknown> = {};
+    if (explicit !== undefined) {
+      params.muted = explicit;
+    }
+    const response = await this.hostBridge.call<unknown>("volume.toggleMute", params);
     const rec = asRecord(response);
     const status = (rec?.status as string) ?? "unsupported";
     if (status !== "ok") return { status };
@@ -251,26 +255,27 @@ export class SystemMediaService {
   }
 
   async replayLatest(): Promise<void> {
-    if (!this.active) return;
-    const nowPlaying = this.latestNowPlaying;
-    if (nowPlaying) {
-      await this.sink.sendEvent(
-        "media.now_playing.update",
-        rebaseNowPlaying(
-          nowPlaying,
-          this.latestNowPlayingReceivedAtMs,
-          this.now(),
-        ),
-      );
-    }
+    if (this.active) {
+      const nowPlaying = this.latestNowPlaying;
+      if (nowPlaying) {
+        await this.sink.sendEvent(
+          "media.now_playing.update",
+          rebaseNowPlaying(
+            nowPlaying,
+            this.latestNowPlayingReceivedAtMs,
+            this.now(),
+          ),
+        );
+      }
 
-    const artwork = this.latestArtwork;
-    if (
-      artwork &&
-      nowPlaying &&
-      artwork.media_generation === nowPlaying.media_generation
-    ) {
-      await this.sink.sendEvent("media.now_playing.artwork", artwork);
+      const artwork = this.latestArtwork;
+      if (
+        artwork &&
+        nowPlaying &&
+        artwork.media_generation === nowPlaying.media_generation
+      ) {
+        await this.sink.sendEvent("media.now_playing.artwork", artwork);
+      }
     }
 
     if (this.volumePercent !== null) {
@@ -341,7 +346,6 @@ export class SystemMediaService {
       log.warn(`Host media stop failed: ${errorMessage(error)}`);
     }
     this.clearMediaCache();
-    this.volumePercent = null;
   }
 
   private async emitStoppedForLastMedia(): Promise<void> {

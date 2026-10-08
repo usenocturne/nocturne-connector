@@ -176,6 +176,12 @@ describe("NocturneManager system media routing", () => {
       manager.onCall("request", "volume.toggleMute", {}),
     ).resolves.toEqual({ result: { status: "ok", volume_percent: 65, muted: true } });
 
+    // Verify params passed to hostBridge for unargumented toggleMute did NOT contain muted: undefined
+    expect(hostBridge.calls.at(-1)).toEqual({
+      method: "volume.toggleMute",
+      params: {},
+    });
+
     await manager.systemMediaService.stop();
   });
 
