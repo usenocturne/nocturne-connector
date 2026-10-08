@@ -578,66 +578,68 @@ impl WindowsMediaState {
                 Ok(json!({ "status": "ok" }))
             }
             "volume.get" | "media.get_volume" => {
-                let (volume, muted) = read_volume_info().unwrap_or((50, false));
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.volume_percent = Some(volume);
-                    inner.muted = Some(muted);
+                match read_volume_info() {
+                    Ok((volume, muted)) => {
+                        self.update_volume_cache(bridge, volume, muted);
+                        Ok(json!({ "status": "ok", "volume_percent": volume, "muted": muted }))
+                    }
+                    Err(_) => Ok(json!({ "status": "unsupported" })),
                 }
-                Ok(json!({ "volume_percent": volume, "muted": muted }))
             }
             "volume.set" | "media.set_volume" => {
-                let requested = params
-                    .get("volume_percent")
-                    .or_else(|| params.get("volumePercent"))
-                    .or_else(|| params.get("level"))
-                    .and_then(Value::as_i64)
-                    .unwrap_or(50);
-                let percent = requested.clamp(0, 100) as u8;
+                let requested_num = match parse_number_param(&params, &["volume_percent", "volumePercent", "level"]) {
+                    Some(n) => n,
+                    None => return Ok(json!({ "status": "unsupported" })),
+                };
+                let percent = requested_num.round().clamp(0.0, 100.0) as u8;
                 let val = set_volume_percent(percent);
-                if let (Some(v), Some(m)) = (
-                    val.get("volume_percent").and_then(Value::as_u64),
-                    val.get("muted").and_then(Value::as_bool),
-                ) {
-                    if let Ok(mut inner) = self.inner.lock() {
-                        inner.volume_percent = Some(v as u8);
-                        inner.muted = Some(m);
+                if val.get("status").and_then(Value::as_str) == Some("ok") {
+                    if let (Some(v), Some(m)) = (
+                        val.get("volume_percent").and_then(Value::as_u64),
+                        val.get("muted").and_then(Value::as_bool),
+                    ) {
+                        self.update_volume_cache(bridge, v as u8, m);
                     }
                 }
                 Ok(val)
             }
             "volume.adjust" | "media.adjust_volume" => {
-                let delta = params
-                    .get("delta")
-                    .or_else(|| params.get("amount"))
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0) as i32;
+                let delta_num = match parse_number_param(&params, &["delta", "amount"]) {
+                    Some(n) => n,
+                    None => return Ok(json!({ "status": "unsupported" })),
+                };
+                let delta = delta_num.round().clamp(-100.0, 100.0) as i32;
                 let val = adjust_volume_percent(delta);
-                if let (Some(v), Some(m)) = (
-                    val.get("volume_percent").and_then(Value::as_u64),
-                    val.get("muted").and_then(Value::as_bool),
-                ) {
-                    if let Ok(mut inner) = self.inner.lock() {
-                        inner.volume_percent = Some(v as u8);
-                        inner.muted = Some(m);
+                if val.get("status").and_then(Value::as_str) == Some("ok") {
+                    if let (Some(v), Some(m)) = (
+                        val.get("volume_percent").and_then(Value::as_u64),
+                        val.get("muted").and_then(Value::as_bool),
+                    ) {
+                        self.update_volume_cache(bridge, v as u8, m);
                     }
                 }
                 Ok(val)
             }
             "volume.toggleMute" | "volume.toggle_mute" | "volume.mute" => {
-                let explicit = params.get("muted").and_then(Value::as_bool);
+                let explicit = match params.get("muted") {
+                    Some(v) => match v.as_bool() {
+                        Some(b) => Some(b),
+                        None => return Ok(json!({ "status": "unsupported" })),
+                    },
+                    None => None,
+                };
                 let val = toggle_mute(explicit);
-                if let (Some(v), Some(m)) = (
-                    val.get("volume_percent").and_then(Value::as_u64),
-                    val.get("muted").and_then(Value::as_bool),
-                ) {
-                    if let Ok(mut inner) = self.inner.lock() {
-                        inner.volume_percent = Some(v as u8);
-                        inner.muted = Some(m);
+                if val.get("status").and_then(Value::as_str) == Some("ok") {
+                    if let (Some(v), Some(m)) = (
+                        val.get("volume_percent").and_then(Value::as_u64),
+                        val.get("muted").and_then(Value::as_bool),
+                    ) {
+                        self.update_volume_cache(bridge, v as u8, m);
                     }
                 }
                 Ok(val)
             }
-            "media.control" => self.control(params).await,
+            "media.control" => self.control(bridge, params).await,
             _ => Err(format!("Unsupported native media method: {method}")),
         }
     }
@@ -660,7 +662,24 @@ impl WindowsMediaState {
         }
     }
 
-    async fn control(&self, params: Value) -> Result<Value, String> {
+    fn update_volume_cache(&self, bridge: &BridgeServer, v: u8, m: bool) {
+        let changed = if let Ok(mut inner) = self.inner.lock() {
+            if inner.volume_percent == Some(v) && inner.muted == Some(m) {
+                false
+            } else {
+                inner.volume_percent = Some(v);
+                inner.muted = Some(m);
+                true
+            }
+        } else {
+            false
+        };
+        if changed {
+            bridge.emit("device.volume.update", json!({ "volume_percent": v, "muted": m }));
+        }
+    }
+
+    async fn control(&self, bridge: &BridgeServer, params: Value) -> Result<Value, String> {
         if !self.is_enabled() {
             return Ok(json!({ "status": "disabled" }));
         }
@@ -668,6 +687,30 @@ impl WindowsMediaState {
             .get("action")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        if action == "volume_up" {
+            let val = step_volume(0.0625);
+            if val.get("status").and_then(Value::as_str) == Some("ok") {
+                if let (Some(v), Some(m)) = (
+                    val.get("volume_percent").and_then(Value::as_u64),
+                    val.get("muted").and_then(Value::as_bool),
+                ) {
+                    self.update_volume_cache(bridge, v as u8, m);
+                }
+            }
+            return Ok(val);
+        }
+        if action == "volume_down" {
+            let val = step_volume(-0.0625);
+            if val.get("status").and_then(Value::as_str) == Some("ok") {
+                if let (Some(v), Some(m)) = (
+                    val.get("volume_percent").and_then(Value::as_u64),
+                    val.get("muted").and_then(Value::as_bool),
+                ) {
+                    self.update_volume_cache(bridge, v as u8, m);
+                }
+            }
+            return Ok(val);
+        }
         let session = self
             .inner
             .lock()
@@ -735,8 +778,6 @@ impl WindowsMediaState {
             "like" | "unlike" => {
                 return Ok(json!({ "status": "unsupported" }));
             }
-            "volume_up" => return Ok(step_volume(0.0625)),
-            "volume_down" => return Ok(step_volume(-0.0625)),
             _ => return Ok(json!({ "status": "unsupported" })),
         };
         Ok(json!({ "status": if result == Some(true) { "ok" } else { "unsupported" } }))
@@ -975,6 +1016,20 @@ fn encode_artwork(bytes: &[u8]) -> Option<String> {
     let mut encoder = JpegEncoder::new_with_quality(&mut output, 80);
     encoder.encode_image(&image).ok()?;
     Some(BASE64.encode(output))
+}
+
+fn parse_number_param(params: &Value, keys: &[&str]) -> Option<f64> {
+    for key in keys {
+        if let Some(v) = params.get(key) {
+            if let Some(n) = v.as_f64() {
+                if n.is_finite() {
+                    return Some(n);
+                }
+            }
+            return None;
+        }
+    }
+    None
 }
 
 fn endpoint_volume() -> Result<IAudioEndpointVolume, String> {

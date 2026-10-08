@@ -44,7 +44,7 @@ impl WindowsNativeState {
         if method.starts_with("bluetooth.") || method.starts_with("rfcomm.") {
             return self.bluetooth.dispatch(bridge, method, params).await;
         }
-        if method.starts_with("media.") {
+        if method.starts_with("media.") || method.starts_with("volume.") {
             return self.media.dispatch(bridge, method, params).await;
         }
         if method == "security.protect" {

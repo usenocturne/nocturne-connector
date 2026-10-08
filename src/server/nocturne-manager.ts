@@ -593,27 +593,44 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
         if (status) return { result: { status } };
       }
 
-      if ((method === "volume.get" || method === "media.get_volume") && this.systemMediaService) {
+      if (method === "volume.get" || method === "media.get_volume") {
+        if (!this.systemMediaService) return { result: { status: "unsupported" } };
         const volume = await this.systemMediaService.getVolume();
         if (volume) return { result: volume };
+        return { result: { status: "unsupported" } };
       }
 
-      if ((method === "volume.set" || method === "media.set_volume") && this.systemMediaService) {
-        const requested = p.volume_percent ?? p.volumePercent ?? p.level ?? 50;
-        const res = await this.systemMediaService.setVolume(requested);
+      if (method === "volume.set" || method === "media.set_volume") {
+        if (!this.systemMediaService) return { result: { status: "unsupported" } };
+        const val = p.volume_percent ?? p.volumePercent ?? p.level;
+        if (typeof val !== "number" || !Number.isFinite(val)) {
+          return { result: { status: "unsupported" } };
+        }
+        const res = await this.systemMediaService.setVolume(val);
         if (res) return { result: res };
+        return { result: { status: "unsupported" } };
       }
 
-      if ((method === "volume.adjust" || method === "media.adjust_volume") && this.systemMediaService) {
-        const delta = p.delta ?? p.amount ?? 0;
+      if (method === "volume.adjust" || method === "media.adjust_volume") {
+        if (!this.systemMediaService) return { result: { status: "unsupported" } };
+        const delta = p.delta ?? p.amount;
+        if (typeof delta !== "number" || !Number.isFinite(delta)) {
+          return { result: { status: "unsupported" } };
+        }
         const res = await this.systemMediaService.adjustVolume(delta);
         if (res) return { result: res };
+        return { result: { status: "unsupported" } };
       }
 
-      if ((method === "volume.toggleMute" || method === "volume.toggle_mute" || method === "volume.mute") && this.systemMediaService) {
-        const explicit = typeof p.muted === "boolean" ? p.muted : undefined;
+      if (method === "volume.toggleMute" || method === "volume.toggle_mute" || method === "volume.mute") {
+        if (!this.systemMediaService) return { result: { status: "unsupported" } };
+        const explicit = p.muted;
+        if (explicit !== undefined && typeof explicit !== "boolean") {
+          return { result: { status: "unsupported" } };
+        }
         const res = await this.systemMediaService.toggleMute(explicit);
         if (res) return { result: res };
+        return { result: { status: "unsupported" } };
       }
 
       if (method === "device.ota.check") {

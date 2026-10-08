@@ -43,7 +43,7 @@ export interface MediaNowPlayingArtwork {
 
 export interface SystemMediaSink {
   sendEvent(topic: string, data: unknown): Promise<void>;
-  sendVolume(volumePercent: number): Promise<void>;
+  sendVolume(volumePercent: number, muted?: boolean): Promise<void>;
 }
 
 export interface SystemMediaPreferenceStore {
@@ -101,6 +101,8 @@ export class SystemMediaService {
   private systemMediaEnabled: boolean;
   private forcedOn = false;
   private volumePercent: number | null = null;
+  private muted: boolean | null = null;
+  private volumeUnsubscribe: (() => void) | null = null;
 
   constructor(
     private readonly hostBridge: HostBridgeClient,
@@ -114,6 +116,10 @@ export class SystemMediaService {
 
   get currentVolumePercent(): number | null {
     return this.volumePercent;
+  }
+
+  get currentMuted(): boolean | null {
+    return this.muted;
   }
 
   get isSystemMediaEnabled(): boolean {
@@ -131,12 +137,19 @@ export class SystemMediaService {
   async start(): Promise<void> {
     if (this.lifecycleStarted) return;
     this.lifecycleStarted = true;
+    this.volumeUnsubscribe = this.hostBridge.onEvent("device.volume.update", (data) => {
+      this.handleVolume(data);
+    });
     await this.applyActivation();
   }
 
   async stop(): Promise<void> {
     if (!this.lifecycleStarted) return;
     this.lifecycleStarted = false;
+    if (this.volumeUnsubscribe) {
+      this.volumeUnsubscribe();
+      this.volumeUnsubscribe = null;
+    }
     await this.deactivate(false);
   }
 
@@ -166,48 +179,61 @@ export class SystemMediaService {
   }
 
   async getVolume(): Promise<{ volume_percent: number; muted: boolean } | null> {
-    if (!this.active) return null;
     const response = await this.hostBridge.call<unknown>("volume.get", {});
     const rec = asRecord(response);
-    if (!rec) return null;
-    const volume_percent = normalizeVolumePercent(rec.volume_percent ?? rec.volumePercent) ?? 50;
+    if (!rec || rec.status === "unsupported") return null;
+    const volume_percent = normalizeVolumePercent(rec.volume_percent ?? rec.volumePercent);
+    if (volume_percent === null) return null;
     const muted = typeof rec.muted === "boolean" ? rec.muted : false;
     this.volumePercent = volume_percent;
+    this.muted = muted;
     return { volume_percent, muted };
   }
 
-  async setVolume(percent: number): Promise<{ status: string; volume_percent: number; muted: boolean } | null> {
-    if (!this.active) return { status: "disabled", volume_percent: 0, muted: false };
+  async setVolume(percent: number): Promise<{ status: string; volume_percent?: number; muted?: boolean } | null> {
+    if (typeof percent !== "number" || !Number.isFinite(percent)) {
+      return { status: "unsupported" };
+    }
     const bounded = Math.max(0, Math.min(100, Math.round(percent)));
     const response = await this.hostBridge.call<unknown>("volume.set", { volume_percent: bounded });
     const rec = asRecord(response);
     const status = (rec?.status as string) ?? "unsupported";
+    if (status !== "ok") return { status };
     const volume_percent = normalizeVolumePercent(rec?.volume_percent ?? rec?.volumePercent) ?? bounded;
     const muted = typeof rec?.muted === "boolean" ? rec.muted : false;
-    if (status === "ok") this.volumePercent = volume_percent;
-    return { status, volume_percent, muted };
+    this.volumePercent = volume_percent;
+    this.muted = muted;
+    return { status: "ok", volume_percent, muted };
   }
 
-  async adjustVolume(delta: number): Promise<{ status: string; volume_percent: number; muted: boolean } | null> {
-    if (!this.active) return { status: "disabled", volume_percent: 0, muted: false };
+  async adjustVolume(delta: number): Promise<{ status: string; volume_percent?: number; muted?: boolean } | null> {
+    if (typeof delta !== "number" || !Number.isFinite(delta)) {
+      return { status: "unsupported" };
+    }
     const response = await this.hostBridge.call<unknown>("volume.adjust", { delta: Math.round(delta) });
     const rec = asRecord(response);
     const status = (rec?.status as string) ?? "unsupported";
-    const volume_percent = normalizeVolumePercent(rec?.volume_percent ?? rec?.volumePercent) ?? 50;
-    const muted = typeof rec?.muted === "boolean" ? rec.muted : false;
-    if (status === "ok") this.volumePercent = volume_percent;
-    return { status, volume_percent, muted };
+    if (status !== "ok") return { status };
+    const volume_percent = normalizeVolumePercent(rec?.volume_percent ?? rec?.volumePercent) ?? (this.volumePercent ?? 50);
+    const muted = typeof rec?.muted === "boolean" ? rec.muted : (this.muted ?? false);
+    this.volumePercent = volume_percent;
+    this.muted = muted;
+    return { status: "ok", volume_percent, muted };
   }
 
-  async toggleMute(explicit?: boolean): Promise<{ status: string; volume_percent: number; muted: boolean } | null> {
-    if (!this.active) return { status: "disabled", volume_percent: 0, muted: false };
+  async toggleMute(explicit?: boolean): Promise<{ status: string; volume_percent?: number; muted?: boolean } | null> {
+    if (explicit !== undefined && typeof explicit !== "boolean") {
+      return { status: "unsupported" };
+    }
     const response = await this.hostBridge.call<unknown>("volume.toggleMute", { muted: explicit });
     const rec = asRecord(response);
     const status = (rec?.status as string) ?? "unsupported";
-    const volume_percent = normalizeVolumePercent(rec?.volume_percent ?? rec?.volumePercent) ?? 50;
-    const muted = typeof rec?.muted === "boolean" ? rec.muted : false;
-    if (status === "ok") this.volumePercent = volume_percent;
-    return { status, volume_percent, muted };
+    if (status !== "ok") return { status };
+    const volume_percent = normalizeVolumePercent(rec?.volume_percent ?? rec?.volumePercent) ?? (this.volumePercent ?? 50);
+    const muted = typeof rec?.muted === "boolean" ? rec.muted : (this.muted ?? false);
+    this.volumePercent = volume_percent;
+    this.muted = muted;
+    return { status: "ok", volume_percent, muted };
   }
 
   async handleControl(method: string): Promise<HostMediaControlStatus | null> {
@@ -248,7 +274,7 @@ export class SystemMediaService {
     }
 
     if (this.volumePercent !== null) {
-      await this.sink.sendVolume(this.volumePercent);
+      await this.sink.sendVolume(this.volumePercent, this.muted ?? undefined);
     }
   }
 
@@ -275,9 +301,6 @@ export class SystemMediaService {
       }),
       this.hostBridge.onEvent("media.now_playing.artwork", (data) => {
         this.handleArtwork(data);
-      }),
-      this.hostBridge.onEvent("device.volume.update", (data) => {
-        this.handleVolume(data);
       }),
     );
 
@@ -416,13 +439,18 @@ export class SystemMediaService {
   }
 
   private handleVolume(data: unknown): void {
-    if (!this.active) return;
+    const rec = asRecord(data);
     const percent = normalizeVolumePercent(
-      asRecord(data)?.volume_percent ?? asRecord(data)?.volumePercent,
+      rec?.volume_percent ?? rec?.volumePercent,
     );
-    if (percent === null || percent === this.volumePercent) return;
+    const muted = typeof rec?.muted === "boolean" ? rec.muted : undefined;
+    if (percent === null) return;
+    if (percent === this.volumePercent && muted === this.muted) return;
     this.volumePercent = percent;
-    this.trackDelivery(this.sink.sendVolume(percent), "host volume");
+    if (muted !== undefined) {
+      this.muted = muted;
+    }
+    this.trackDelivery(this.sink.sendVolume(percent, muted), "host volume");
   }
 
   private async refreshVolume(): Promise<void> {

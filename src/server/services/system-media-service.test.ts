@@ -64,15 +64,15 @@ class FakeHostBridge implements HostBridgeClient {
 class RecordingSink implements SystemMediaSink {
   readonly deliveries: Array<
     | { kind: "event"; topic: string; data: unknown }
-    | { kind: "volume"; volumePercent: number }
+    | { kind: "volume"; volumePercent: number; muted?: boolean }
   > = [];
 
   async sendEvent(topic: string, data: unknown): Promise<void> {
     this.deliveries.push({ kind: "event", topic, data });
   }
 
-  async sendVolume(volumePercent: number): Promise<void> {
-    this.deliveries.push({ kind: "volume", volumePercent });
+  async sendVolume(volumePercent: number, muted?: boolean): Promise<void> {
+    this.deliveries.push({ kind: "volume", volumePercent, muted });
   }
 }
 
@@ -139,6 +139,106 @@ describe("SystemMediaService", () => {
     // toggleMute
     const muteRes = await service.toggleMute();
     expect(muteRes).toEqual({ status: "ok", volume_percent: 85, muted: true });
+
+    await service.stop();
+  });
+
+  test("rejects invalid inputs without calling host or altering cached state", async () => {
+    class FakeVolumeHostBridge extends FakeHostBridge {
+      vol = 50;
+      muted = false;
+
+      async call<TResult = unknown>(method: string, params: unknown = {}): Promise<TResult> {
+        this.calls.push({ method, params });
+        if (method === "volume.get") {
+          return { volume_percent: this.vol, muted: this.muted } as TResult;
+        }
+        return { status: "ok" } as TResult;
+      }
+    }
+
+    const host = new FakeVolumeHostBridge();
+    const sink = new RecordingSink();
+    const service = new SystemMediaService(host, sink);
+    await service.start();
+    await service.getVolume(); // cache is (50, false)
+    host.calls.length = 0;
+
+    // setVolume invalid types
+    expect(await service.setVolume(NaN)).toEqual({ status: "unsupported" });
+    expect(await service.setVolume("75" as any)).toEqual({ status: "unsupported" });
+    expect(host.calls).toHaveLength(0);
+
+    // adjustVolume invalid types
+    expect(await service.adjustVolume(Infinity)).toEqual({ status: "unsupported" });
+    expect(await service.adjustVolume("10" as any)).toEqual({ status: "unsupported" });
+    expect(host.calls).toHaveLength(0);
+
+    // toggleMute invalid types
+    expect(await service.toggleMute("yes" as any)).toEqual({ status: "unsupported" });
+    expect(host.calls).toHaveLength(0);
+
+    // Cache remains unchanged
+    expect(service.currentVolumePercent).toBe(50);
+    expect(service.currentMuted).toBeFalse();
+
+    await service.stop();
+  });
+
+  test("handles endpoint failures without fabricating 50% or unmuted values", async () => {
+    class FailingVolumeHostBridge extends FakeHostBridge {
+      async call<TResult = unknown>(method: string, params: unknown = {}): Promise<TResult> {
+        this.calls.push({ method, params });
+        return { status: "unsupported" } as TResult;
+      }
+    }
+
+    const host = new FailingVolumeHostBridge();
+    const sink = new RecordingSink();
+    const service = new SystemMediaService(host, sink);
+    await service.start();
+
+    expect(await service.getVolume()).toBeNull();
+    expect(await service.setVolume(50)).toEqual({ status: "unsupported" });
+    expect(await service.adjustVolume(10)).toEqual({ status: "unsupported" });
+    expect(await service.toggleMute()).toEqual({ status: "unsupported" });
+
+    expect(service.currentVolumePercent).toBeNull();
+    expect(service.currentMuted).toBeNull();
+
+    await service.stop();
+  });
+
+  test("volume RPCs work even when system media playback integration is disabled", async () => {
+    class FakeVolumeHostBridge extends FakeHostBridge {
+      vol = 30;
+      muted = false;
+
+      async call<TResult = unknown>(method: string, params: unknown = {}): Promise<TResult> {
+        this.calls.push({ method, params });
+        if (method === "volume.get") {
+          return { volume_percent: this.vol, muted: this.muted } as TResult;
+        } else if (method === "volume.set") {
+          const p = params as { volume_percent: number };
+          this.vol = p.volume_percent;
+          return { status: "ok", volume_percent: this.vol, muted: this.muted } as TResult;
+        }
+        return super.call(method, params);
+      }
+    }
+
+    const host = new FakeVolumeHostBridge();
+    const sink = new RecordingSink();
+    const prefs = new MemoryPreferenceStore(false); // disabled
+    const service = new SystemMediaService(host, sink, prefs);
+    await service.start();
+
+    expect(service.isActive).toBeFalse(); // playback integration inactive
+
+    // Volume commands should still succeed!
+    const setRes = await service.setVolume(60);
+    expect(setRes).toEqual({ status: "ok", volume_percent: 60, muted: false });
+    expect(service.currentVolumePercent).toBe(60);
 
     await service.stop();
   });
