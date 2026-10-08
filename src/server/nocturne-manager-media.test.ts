@@ -121,6 +121,64 @@ describe("NocturneManager system media routing", () => {
     await manager.systemMediaService?.stop();
   });
 
+  test("routes volume RPC methods to SystemMediaService", async () => {
+    class FakeVolumeManagerBridge extends FakeMediaHostBridge {
+      vol = 50;
+      muted = false;
+
+      async call<TResult = unknown>(method: string, params: unknown = {}): Promise<TResult> {
+        this.calls.push({ method, params });
+        if (method === "volume.get" || method === "media.get_volume") {
+          return { volume_percent: this.vol, muted: this.muted } as TResult;
+        } else if (method === "volume.set") {
+          const p = params as { volume_percent: number };
+          this.vol = p.volume_percent;
+          return { status: "ok", volume_percent: this.vol, muted: this.muted } as TResult;
+        } else if (method === "volume.adjust") {
+          const p = params as { delta: number };
+          this.vol = Math.max(0, Math.min(100, this.vol + p.delta));
+          return { status: "ok", volume_percent: this.vol, muted: this.muted } as TResult;
+        } else if (method === "volume.toggleMute") {
+          const p = params as { muted?: boolean };
+          this.muted = p.muted ?? !this.muted;
+          return { status: "ok", volume_percent: this.vol, muted: this.muted } as TResult;
+        }
+        return super.call(method, params);
+      }
+    }
+
+    const hostBridge = new FakeVolumeManagerBridge();
+    const manager = new NocturneManager({
+      platform: "win32",
+      bluetoothService: fakeBluetoothService(),
+      hostBridge,
+    });
+    if (!manager.systemMediaService) throw new Error("expected system media service");
+    await manager.systemMediaService.start();
+
+    // volume.get
+    await expect(
+      manager.onCall("request", "volume.get", {}),
+    ).resolves.toEqual({ result: { volume_percent: 50, muted: false } });
+
+    // volume.set
+    await expect(
+      manager.onCall("request", "volume.set", { volume_percent: 75 }),
+    ).resolves.toEqual({ result: { status: "ok", volume_percent: 75, muted: false } });
+
+    // volume.adjust
+    await expect(
+      manager.onCall("request", "volume.adjust", { delta: -10 }),
+    ).resolves.toEqual({ result: { status: "ok", volume_percent: 65, muted: false } });
+
+    // volume.toggleMute
+    await expect(
+      manager.onCall("request", "volume.toggleMute", {}),
+    ).resolves.toEqual({ result: { status: "ok", volume_percent: 65, muted: true } });
+
+    await manager.systemMediaService.stop();
+  });
+
   test("forwards device media controls to the optional native host", async () => {
     const hostBridge = new FakeMediaHostBridge();
     const manager = new NocturneManager({

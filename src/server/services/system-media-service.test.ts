@@ -92,6 +92,57 @@ class MemoryPreferenceStore implements SystemMediaPreferenceStore {
 }
 
 describe("SystemMediaService", () => {
+  test("supports getVolume, setVolume, adjustVolume, and toggleMute volume RPCs", async () => {
+    class FakeVolumeHostBridge extends FakeHostBridge {
+      vol = 40;
+      muted = false;
+
+      async call<TResult = unknown>(method: string, params: unknown = {}): Promise<TResult> {
+        this.calls.push({ method, params });
+        if (method === "volume.get") {
+          return { volume_percent: this.vol, muted: this.muted } as TResult;
+        } else if (method === "volume.set") {
+          const p = params as { volume_percent: number };
+          this.vol = p.volume_percent;
+          return { status: "ok", volume_percent: this.vol, muted: this.muted } as TResult;
+        } else if (method === "volume.adjust") {
+          const p = params as { delta: number };
+          this.vol = Math.max(0, Math.min(100, this.vol + p.delta));
+          return { status: "ok", volume_percent: this.vol, muted: this.muted } as TResult;
+        } else if (method === "volume.toggleMute") {
+          const p = params as { muted?: boolean };
+          this.muted = p.muted ?? !this.muted;
+          return { status: "ok", volume_percent: this.vol, muted: this.muted } as TResult;
+        }
+        return super.call(method, params);
+      }
+    }
+
+    const host = new FakeVolumeHostBridge();
+    const sink = new RecordingSink();
+    const service = new SystemMediaService(host, sink);
+    await service.start();
+
+    // getVolume
+    const getRes = await service.getVolume();
+    expect(getRes).toEqual({ volume_percent: 40, muted: false });
+
+    // setVolume with clamping
+    const setRes = await service.setVolume(120);
+    expect(setRes).toEqual({ status: "ok", volume_percent: 100, muted: false });
+    expect(host.calls.at(-1)).toEqual({ method: "volume.set", params: { volume_percent: 100 } });
+
+    // adjustVolume
+    const adjRes = await service.adjustVolume(-15);
+    expect(adjRes).toEqual({ status: "ok", volume_percent: 85, muted: false });
+
+    // toggleMute
+    const muteRes = await service.toggleMute();
+    expect(muteRes).toEqual({ status: "ok", volume_percent: 85, muted: true });
+
+    await service.stop();
+  });
+
   test("starts the host after registering listeners and reports initial volume", async () => {
     const host = new FakeHostBridge();
     const sink = new RecordingSink();

@@ -593,6 +593,29 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
         if (status) return { result: { status } };
       }
 
+      if ((method === "volume.get" || method === "media.get_volume") && this.systemMediaService) {
+        const volume = await this.systemMediaService.getVolume();
+        if (volume) return { result: volume };
+      }
+
+      if ((method === "volume.set" || method === "media.set_volume") && this.systemMediaService) {
+        const requested = p.volume_percent ?? p.volumePercent ?? p.level ?? 50;
+        const res = await this.systemMediaService.setVolume(requested);
+        if (res) return { result: res };
+      }
+
+      if ((method === "volume.adjust" || method === "media.adjust_volume") && this.systemMediaService) {
+        const delta = p.delta ?? p.amount ?? 0;
+        const res = await this.systemMediaService.adjustVolume(delta);
+        if (res) return { result: res };
+      }
+
+      if ((method === "volume.toggleMute" || method === "volume.toggle_mute" || method === "volume.mute") && this.systemMediaService) {
+        const explicit = typeof p.muted === "boolean" ? p.muted : undefined;
+        const res = await this.systemMediaService.toggleMute(explicit);
+        if (res) return { result: res };
+      }
+
       if (method === "device.ota.check") {
         const currentVersion = p.currentVersion ?? "unknown";
         const result = await this.otaService.checkForUpdates(currentVersion, "beta");

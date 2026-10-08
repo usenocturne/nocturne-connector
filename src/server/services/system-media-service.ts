@@ -165,6 +165,51 @@ export class SystemMediaService {
     await this.hostBridge.call("media.set_spotify_linked", { linked });
   }
 
+  async getVolume(): Promise<{ volume_percent: number; muted: boolean } | null> {
+    if (!this.active) return null;
+    const response = await this.hostBridge.call<unknown>("volume.get", {});
+    const rec = asRecord(response);
+    if (!rec) return null;
+    const volume_percent = normalizeVolumePercent(rec.volume_percent ?? rec.volumePercent) ?? 50;
+    const muted = typeof rec.muted === "boolean" ? rec.muted : false;
+    this.volumePercent = volume_percent;
+    return { volume_percent, muted };
+  }
+
+  async setVolume(percent: number): Promise<{ status: string; volume_percent: number; muted: boolean } | null> {
+    if (!this.active) return { status: "disabled", volume_percent: 0, muted: false };
+    const bounded = Math.max(0, Math.min(100, Math.round(percent)));
+    const response = await this.hostBridge.call<unknown>("volume.set", { volume_percent: bounded });
+    const rec = asRecord(response);
+    const status = (rec?.status as string) ?? "unsupported";
+    const volume_percent = normalizeVolumePercent(rec?.volume_percent ?? rec?.volumePercent) ?? bounded;
+    const muted = typeof rec?.muted === "boolean" ? rec.muted : false;
+    if (status === "ok") this.volumePercent = volume_percent;
+    return { status, volume_percent, muted };
+  }
+
+  async adjustVolume(delta: number): Promise<{ status: string; volume_percent: number; muted: boolean } | null> {
+    if (!this.active) return { status: "disabled", volume_percent: 0, muted: false };
+    const response = await this.hostBridge.call<unknown>("volume.adjust", { delta: Math.round(delta) });
+    const rec = asRecord(response);
+    const status = (rec?.status as string) ?? "unsupported";
+    const volume_percent = normalizeVolumePercent(rec?.volume_percent ?? rec?.volumePercent) ?? 50;
+    const muted = typeof rec?.muted === "boolean" ? rec.muted : false;
+    if (status === "ok") this.volumePercent = volume_percent;
+    return { status, volume_percent, muted };
+  }
+
+  async toggleMute(explicit?: boolean): Promise<{ status: string; volume_percent: number; muted: boolean } | null> {
+    if (!this.active) return { status: "disabled", volume_percent: 0, muted: false };
+    const response = await this.hostBridge.call<unknown>("volume.toggleMute", { muted: explicit });
+    const rec = asRecord(response);
+    const status = (rec?.status as string) ?? "unsupported";
+    const volume_percent = normalizeVolumePercent(rec?.volume_percent ?? rec?.volumePercent) ?? 50;
+    const muted = typeof rec?.muted === "boolean" ? rec.muted : false;
+    if (status === "ok") this.volumePercent = volume_percent;
+    return { status, volume_percent, muted };
+  }
+
   async handleControl(method: string): Promise<HostMediaControlStatus | null> {
     const action = mediaControlAction(method);
     if (!action) return null;
