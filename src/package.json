@@ -1,6 +1,6 @@
 {
   "name": "nocturne-connector",
-  "version": "2.1.4",
+  "version": "2.1.5",
   "type": "module",
   "scripts": {
     "dev": "concurrently \"bun run dev:server\" \"bun run dev:client\"",
