@@ -189,10 +189,15 @@ describe("NocturneManager system media routing", () => {
     await manager.systemMediaService.stop();
   });
 
-  test("forwards mute-only state changes with same volume percentage to NocturneManager sink", async () => {
+  test("forwards mute-only state changes with same volume percentage to NocturneManager sink and Car Thing RPC", async () => {
     const hostBridge = new FakeMediaHostBridge();
-    let sentVolumePct = 0;
-    let sentMuted: boolean | undefined = undefined;
+    const rpcCalls: Array<{ method: string; params: unknown }> = [];
+    const fakeRpcClient = {
+      call: (method: string, params: unknown) => {
+        rpcCalls.push({ method, params });
+        return Promise.resolve({ result: "ok" });
+      },
+    } as any;
 
     const manager = new NocturneManager({
       platform: "win32",
@@ -201,24 +206,36 @@ describe("NocturneManager system media routing", () => {
     });
     if (!manager.systemMediaService) throw new Error("expected system media service");
 
-    // Replace the sink delivery check
-    (manager as any).queueHostVolumeUpdate = (vol: number, muted?: boolean) => {
-      sentVolumePct = vol;
-      sentMuted = muted;
-      return Promise.resolve();
-    };
+    (manager as any).connections.set("fake-device", {
+      rpcClient: fakeRpcClient,
+      deviceInfo: null,
+    });
 
     await manager.systemMediaService.start();
 
-    // Initial volume 50, false
+    // Initial volume 50, unmuted
     hostBridge.emit("device.volume.update", { volume_percent: 50, muted: false });
-    expect(sentVolumePct).toBe(50);
-    expect(sentMuted).toBeFalse();
+    await (manager as any).hostVolumeReportTask;
+    expect(rpcCalls.at(-1)).toEqual({
+      method: "device.volume.update",
+      params: { volume_percent: 50, muted: false },
+    });
 
     // Mute-only change: same volume 50, muted true
     hostBridge.emit("device.volume.update", { volume_percent: 50, muted: true });
-    expect(sentVolumePct).toBe(50);
-    expect(sentMuted).toBeTrue();
+    await (manager as any).hostVolumeReportTask;
+    expect(rpcCalls.at(-1)).toEqual({
+      method: "device.volume.update",
+      params: { volume_percent: 50, muted: true },
+    });
+
+    // Legacy volume-only change (without muted) remains compatible
+    hostBridge.emit("device.volume.update", { volume_percent: 60 });
+    await (manager as any).hostVolumeReportTask;
+    expect(rpcCalls.at(-1)).toEqual({
+      method: "device.volume.update",
+      params: { volume_percent: 60 },
+    });
 
     await manager.systemMediaService.stop();
   });
