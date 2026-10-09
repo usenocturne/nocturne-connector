@@ -66,6 +66,14 @@ describe("sendAppReady", () => {
     expect(broadcastData).toMatchObject({
       platform: "web",
       connectorPlatform: "windows",
+      capabilities: {
+        volume: false,
+        media: false,
+        discord: false,
+        systemStats: false,
+        macros: false,
+        appLaunch: false,
+      },
     });
     expect(typeof broadcastData.timestamp).toBe("number");
     expect(typeof broadcastData.datetime).toBe("string");
@@ -90,6 +98,61 @@ describe("sendAppReady", () => {
       platform: "web",
     });
     expect(broadcastData.connectorPlatform).toBeUndefined();
+  });
+});
+
+describe("capabilities", () => {
+  test("returns false for volume and media when systemMediaService is null", async () => {
+    const { NocturneManager } = await import("./nocturne-manager");
+    const manager = new NocturneManager({ platform: "linux" });
+    expect(manager.getCapabilities()).toEqual({
+      volume: false,
+      media: false,
+      discord: false,
+      systemStats: false,
+      macros: false,
+      appLaunch: false,
+    });
+  });
+
+  test("returns true for volume and media when systemMediaService is initialized", async () => {
+    const { NocturneManager } = await import("./nocturne-manager");
+    const mockHostBridge: any = {
+      call: async () => ({}),
+      onEvent: () => () => {},
+      close: () => {},
+    };
+    const manager = new NocturneManager({ platform: "win32", hostBridge: mockHostBridge });
+    expect(manager.getCapabilities()).toEqual({
+      volume: true,
+      media: true,
+      discord: false,
+      systemStats: false,
+      macros: false,
+      appLaunch: false,
+    });
+  });
+
+  test("responds to capability RPC queries via onCall", async () => {
+    const { NocturneManager } = await import("./nocturne-manager");
+    const manager = new NocturneManager({ platform: "linux" });
+    const expected = {
+      result: {
+        capabilities: {
+          volume: false,
+          media: false,
+          discord: false,
+          systemStats: false,
+          macros: false,
+          appLaunch: false,
+        },
+      },
+    };
+
+    expect(await manager.onCall("1", "connector.capabilities", {})).toEqual(expected);
+    expect(await manager.onCall("1", "host.capabilities", {})).toEqual(expected);
+    expect(await manager.onCall("1", "connector.get_capabilities", {})).toEqual(expected);
+    expect(await manager.onCall("1", "capabilities.get", {})).toEqual(expected);
   });
 });
 
