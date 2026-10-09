@@ -6,7 +6,7 @@ This document details the existing Windows System Media and Volume integration i
 
 The Windows Connector integrates natively with Windows System Media via Global System Media Transport Controls (`GSMTC` / `GlobalSystemMediaTransportControlsSessionManager`) and Windows Audio Endpoint APIs (`IAudioEndpointVolume`).
 
-The runtime data flow is:
+The runtime data flow for media metadata and events is:
 
 ```text
 Windows APIs (GSMTC & IAudioEndpointVolume)
@@ -18,11 +18,34 @@ NocturneManager (src/server/nocturne-manager.ts)
 Car Thing UI (My-Turne / Nocturne UI)
 ```
 
-## Existing Media RPC Methods
+## Media Control Separation & Routing
 
-The native Windows connector and backend RPC dispatcher support the following methods out-of-the-box.
+There is a distinction between device-facing RPC methods and native host-bridge calls:
 
-### Volume Controls
+- **Device-Facing RPC Methods**: Car Thing daemons call explicit methods such as `media.control.play`, `media.control.pause`, `media.control.next`, `media.control.previous`, `media.control.toggle`, `media.control.shuffle`, `media.control.repeat`, `media.control.volumeUp`, and `media.control.volumeDown`.
+- **Native Host-Bridge RPC**: `SystemMediaService` maps device-facing methods onto a single native host bridge call `media.control` with an `{ action: string }` payload (`play`, `pause`, `stop`, `toggle`, `next`, `previous`, `shuffle`, `repeat`, `volume_up`, `volume_down`).
+
+> **Routing Note for `my-turne`**: Currently in `my-turne`, UI media controls are hardcoded to route toward phone HID / Spotify. Directing media control actions to a connected Windows Connector requires a route-selection change in `my-turne`.
+
+## Volume Control & Event Flow
+
+The end-to-end master volume update flow is:
+
+```text
+Windows Audio Endpoint (IAudioEndpointVolume) / IMMNotificationClient
+    ↓
+Native Windows Host Bridge emits `device.volume.update` ({ volume_percent, muted })
+    ↓
+SystemMediaService receives event and updates cache
+    ↓
+NocturneManager queues and calls daemon `device.volume.update` RPC ({ volume_percent, muted })
+    ↓
+Daemon translates into UI `phone.volume.update` event
+```
+
+> **Daemon Compatibility Note**: The current Car Thing daemon processes `volume_percent` from `device.volume.update` but currently drops `muted`. Master volume adjustments work end-to-end, while full mute presentation in the UI requires daemon-side handling of `muted`.
+
+### Volume RPC Methods
 
 | RPC Method | Parameters | Description |
 | --- | --- | --- |
@@ -31,22 +54,14 @@ The native Windows connector and backend RPC dispatcher support the following me
 | `volume.adjust` / `media.adjust_volume` | `{ delta: number }` | Adjusts master volume by delta percentage |
 | `volume.toggleMute` / `volume.toggle_mute` | `{ muted?: boolean }` | Toggles or explicitly sets mute state |
 
-### Media Controls
+## GSMTC Session Handling & Spotify Filtering
 
-Methods called via `media.control.<action>` or `media.control` RPC:
-
-| RPC Method / Action | Target Action | Description |
-| --- | --- | --- |
-| `media.control.play` | `play` | TryPlayAsync on current media session |
-| `media.control.pause` | `pause` | TryPauseAsync on current media session |
-| `media.control.stop` | `stop` | TryStopAsync on current media session |
-| `media.control.toggle` / `playPause` / `togglePlayPause` | `toggle` | TryTogglePlayPauseAsync on current media session |
-| `media.control.next` | `next` | TrySkipNextAsync on current media session |
-| `media.control.previous` / `prev` | `previous` | TrySkipPreviousAsync on current media session |
-| `media.control.shuffle` | `shuffle` | Toggles shuffle mode |
-| `media.control.repeat` | `repeat` | Cycles auto repeat mode (off -> list -> track) |
-| `media.control.volumeUp` / `volume_up` | `volume_up` | Steps master volume up |
-| `media.control.volumeDown` / `volume_down` | `volume_down` | Steps master volume down |
+1. **GSMTC Current Session**:
+   - The native host polls `GlobalSystemMediaTransportControlsSessionManager.GetCurrentSession()`.
+   - It monitors the currently active system media session provided by Windows.
+2. **Spotify Filtering Policy**:
+   - **Spotify Linked**: When a Spotify account is linked in Nocturne, direct Spotify API/WebSocket integration owns Spotify playback. If `GetCurrentSession()` returns a Spotify source, the native host/Connector suppresses those media events without switching to another media player session.
+   - **Spotify Skipped / Unlinked**: When Spotify is skipped or unlinked, GSMTC handles all system media sources, including Spotify desktop, web browser playback, and local media applications. `SystemMediaService` remains forced active while Spotify is marked skipped (`spotify-skipped.json`).
 
 ## Events Broadcasted to Car Thing
 
@@ -58,18 +73,20 @@ Methods called via `media.control.<action>` or `media.control` RPC:
 
 ## Payload Casing & Compatibility
 
-- Canonical outgoing wire fields use snake_case (`media_item_attributes`, `playback_attributes`, `media_generation`, `volume_percent`).
-- `SystemMediaService.normalizeNowPlayingUpdate` accepts both legacy camelCase and canonical snake_case inputs from native bridges.
-
-## Spotify Integration & Filtering Policy
-
-1. **Spotify Linked**:
-   - When a Spotify account is linked, Spotify desktop playback is handled directly via Spotify Connect / Spotify API.
-   - GSMTC system media events originating from `Spotify` are suppressed by `SystemMediaService` to avoid duplicating linked Spotify state on the UI.
-2. **Spotify Skipped / Unlinked**:
-   - When Spotify is skipped or not linked, GSMTC handles all media sources including Spotify desktop, browser playback, and local media players.
-   - `SystemMediaService` remains forced active while Spotify is skipped (`spotify-skipped.json`).
+- Canonical outgoing wire fields use `snake_case` (`media_item_attributes`, `playback_attributes`, `media_generation`, `volume_percent`).
+- `SystemMediaService.normalizeNowPlayingUpdate` accepts both legacy `camelCase` and canonical `snake_case` inputs from native bridges.
 
 ## Replay & Timeline Rebase
 
-- Upon Car Thing connection or UI replay requests, `SystemMediaService.replayLatest()` rebases playing track progress (`PlaybackElapsedTimeInMilliseconds`) based on the `PlaybackRate` and elapsed time since update emission, ensuring progress is accurately reflected on the Car Thing without jumping backward.
+- Upon Car Thing connection or UI replay requests, `SystemMediaService.replayLatest()` rebases playing track progress (`PlaybackElapsedTimeInMilliseconds`) based on `PlaybackRate` and elapsed time since update emission, ensuring track progress is accurately displayed on the Car Thing without moving backward.
+
+## Validation Checklist & Gap Analysis
+
+When testing My-Turne integration with the Windows Connector:
+
+- [ ] **Browser Media**: Play audio/video in Chrome/Edge/Firefox. Verify track title, artist, play/pause state, and timeline updates reach the Car Thing.
+- [ ] **Desktop Media Players**: Play media in a native Windows player (e.g., Windows Media Player / Foobar2000 / VLC). Verify metadata, artwork, and playback controls (`media.control.*`).
+- [ ] **Spotify Desktop (Unlinked / Skipped)**: Verify Spotify desktop playback appears via GSMTC when Spotify account is skipped/unlinked in Connector.
+- [ ] **Spotify Desktop (Linked)**: Verify GSMTC suppresses Spotify system media events when Spotify account is linked.
+- [ ] **Volume Controls**: Trigger volume adjustment from Car Thing and Windows system tray. Confirm `device.volume.update` updates master volume on Windows.
+- [ ] **Cross-Repo Gap (`my-turne`)**: Ensure `my-turne` daemon routes media RPC calls to Windows when Windows Connector is selected over Phone HID.
