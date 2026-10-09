@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { HostBridgeClient } from "./platform/host-bridge";
 import { NocturneManager } from "./nocturne-manager";
 import {
@@ -256,6 +256,7 @@ describe("NocturneManager system media routing", () => {
       platform: "win32",
       bluetoothService: fakeBluetoothService(),
       hostBridge,
+      systemMediaPreferenceStore: new MemoryBooleanPreference(true),
     });
     if (!manager.systemMediaService) throw new Error("expected system media service");
 
@@ -434,34 +435,42 @@ describe("NocturneManager system media routing", () => {
 
     await systemMedia.start();
 
-    // Emit initial now playing update and artwork
-    hostBridge.emit("media.now_playing.update", {
-      media_item_attributes: {
-        MediaItemTitle: "Replay Test",
-        MediaItemArtist: "Artist",
-        MediaItemPlaybackDurationInMilliseconds: 300000,
-      },
-      playback_attributes: {
-        PlaybackStatus: "playing",
-        PlaybackElapsedTimeInMilliseconds: 10000,
-        PlaybackRate: 1,
-      },
-      media_generation: 5,
-    });
-    hostBridge.emit("media.now_playing.artwork", {
-      data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
-      content_type: "image/jpeg",
-      media_generation: 5,
-    });
-    await systemMedia.whenIdle();
-    eventsSent.length = 0;
+    let nowMs = 1_000_000;
+    const clock = spyOn(Date, "now").mockImplementation(() => nowMs);
+    try {
+      // Emit initial now playing update and artwork
+      hostBridge.emit("media.now_playing.update", {
+        media_item_attributes: {
+          MediaItemTitle: "Replay Test",
+          MediaItemArtist: "Artist",
+          MediaItemPlaybackDurationInMilliseconds: 300000,
+        },
+        playback_attributes: {
+          PlaybackStatus: "playing",
+          PlaybackElapsedTimeInMilliseconds: 10000,
+          PlaybackRate: 1,
+        },
+        media_generation: 5,
+      });
+      hostBridge.emit("media.now_playing.artwork", {
+        data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+        content_type: "image/jpeg",
+        media_generation: 5,
+      });
+      await systemMedia.whenIdle();
+      eventsSent.length = 0;
 
-    // Register connected device and trigger sendAppReady
-    (manager as any).connections.set("fake-device", {
-      rpcClient: fakeRpcClient,
-      deviceInfo: null,
-    });
-    await (manager as any).sendAppReady();
+      nowMs += 5000;
+
+      // Register connected device and trigger sendAppReady
+      (manager as any).connections.set("fake-device", {
+        rpcClient: fakeRpcClient,
+        deviceInfo: null,
+      });
+      await (manager as any).sendAppReady();
+    } finally {
+      clock.mockRestore();
+    }
 
     // Verify reconnected client received rebased track progress and artwork
     const replayedUpdate = eventsSent.find((e) => e.topic === "media.now_playing.update");
@@ -470,7 +479,7 @@ describe("NocturneManager system media routing", () => {
     expect(replayedUpdate).toBeDefined();
     expect(
       (replayedUpdate?.data as any).playback_attributes.PlaybackElapsedTimeInMilliseconds,
-    ).toBeGreaterThanOrEqual(10000);
+    ).toBe(15000);
 
     expect(replayedArtwork).toBeDefined();
     expect((replayedArtwork?.data as any).media_generation).toBe(5);
