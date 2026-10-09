@@ -96,6 +96,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   private carThingRangeTasks = new Map<string, AbortController>();
   private carThingOtaGeneration = 0;
   private pendingHostVolumePercent: number | null = null;
+  private pendingHostMuted: boolean | null = null;
   private hostVolumeReportTask: Promise<void> | null = null;
   private systemMediaModeTask: Promise<void> = Promise.resolve();
   private readonly platform: NodeJS.Platform;
@@ -122,8 +123,8 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
     this.systemMediaService = dependencies.hostBridge
       ? new SystemMediaService(dependencies.hostBridge, {
           sendEvent: (topic, data) => this.broadcastToDevices(topic, data),
-          sendVolume: (volumePercent) =>
-            this.queueHostVolumeUpdate(volumePercent),
+          sendVolume: (volumePercent, muted) =>
+            this.queueHostVolumeUpdate(volumePercent, muted),
         }, dependencies.systemMediaPreferenceStore)
       : null;
 
@@ -531,13 +532,19 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
     }
   }
 
-  private queueHostVolumeUpdate(volumePercent: number): Promise<void> {
+  private queueHostVolumeUpdate(volumePercent: number, muted?: boolean): Promise<void> {
     this.pendingHostVolumePercent = volumePercent;
+    if (typeof muted === "boolean") {
+      this.pendingHostMuted = muted;
+    }
     if (!this.hostVolumeReportTask) {
       this.hostVolumeReportTask = this.flushHostVolumeUpdates().finally(() => {
         this.hostVolumeReportTask = null;
         if (this.pendingHostVolumePercent !== null) {
-          void this.queueHostVolumeUpdate(this.pendingHostVolumePercent);
+          void this.queueHostVolumeUpdate(
+            this.pendingHostVolumePercent,
+            this.pendingHostMuted ?? undefined,
+          );
         }
       });
     }
@@ -547,12 +554,18 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   private async flushHostVolumeUpdates(): Promise<void> {
     while (this.pendingHostVolumePercent !== null) {
       const volumePercent = this.pendingHostVolumePercent;
+      const muted = this.pendingHostMuted;
       this.pendingHostVolumePercent = null;
+      this.pendingHostMuted = null;
       for (const [id, conn] of this.connections) {
         try {
-          await conn.rpcClient.call("device.volume.update", {
+          const payload: Record<string, unknown> = {
             volume_percent: volumePercent,
-          });
+          };
+          if (typeof muted === "boolean") {
+            payload.muted = muted;
+          }
+          await conn.rpcClient.call("device.volume.update", payload);
         } catch (err) {
           log.warn(`Host volume update to ${id} failed: ${errorMessage(err)}`);
         }
@@ -591,6 +604,46 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
       if (method.startsWith("media.control.") && this.systemMediaService) {
         const status = await this.systemMediaService.handleControl(method);
         if (status) return { result: { status } };
+      }
+
+      if (method === "volume.get" || method === "media.get_volume") {
+        if (!this.systemMediaService) return { result: { status: "unsupported" } };
+        const volume = await this.systemMediaService.getVolume();
+        if (volume) return { result: volume };
+        return { result: { status: "unsupported" } };
+      }
+
+      if (method === "volume.set" || method === "media.set_volume") {
+        if (!this.systemMediaService) return { result: { status: "unsupported" } };
+        const val = p.volume_percent ?? p.volumePercent ?? p.level;
+        if (typeof val !== "number" || !Number.isFinite(val)) {
+          return { result: { status: "unsupported" } };
+        }
+        const res = await this.systemMediaService.setVolume(val);
+        if (res) return { result: res };
+        return { result: { status: "unsupported" } };
+      }
+
+      if (method === "volume.adjust" || method === "media.adjust_volume") {
+        if (!this.systemMediaService) return { result: { status: "unsupported" } };
+        const delta = p.delta ?? p.amount;
+        if (typeof delta !== "number" || !Number.isFinite(delta)) {
+          return { result: { status: "unsupported" } };
+        }
+        const res = await this.systemMediaService.adjustVolume(delta);
+        if (res) return { result: res };
+        return { result: { status: "unsupported" } };
+      }
+
+      if (method === "volume.toggleMute" || method === "volume.toggle_mute" || method === "volume.mute") {
+        if (!this.systemMediaService) return { result: { status: "unsupported" } };
+        const explicit = p.muted;
+        if (explicit !== undefined && typeof explicit !== "boolean") {
+          return { result: { status: "unsupported" } };
+        }
+        const res = await this.systemMediaService.toggleMute(explicit);
+        if (res) return { result: res };
+        return { result: { status: "unsupported" } };
       }
 
       if (method === "device.ota.check") {
