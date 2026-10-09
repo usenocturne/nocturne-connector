@@ -1,12 +1,12 @@
 # Windows Media Integration Architecture (Sprint 3)
 
-This document details the existing Windows System Media and Volume integration in `nocturne-connector` for My-Turne.
+This document details the Windows System Media and Volume integration in `nocturne-connector` for My-Turne.
 
 ## Overview
 
 The Windows Connector integrates natively with Windows System Media via Global System Media Transport Controls (`GSMTC` / `GlobalSystemMediaTransportControlsSessionManager`) and Windows Audio Endpoint APIs (`IAudioEndpointVolume`).
 
-The runtime data flow for media metadata and events is:
+The runtime data flow for media metadata, volume, and control commands is:
 
 ```text
 Windows APIs (GSMTC & IAudioEndpointVolume)
@@ -14,80 +14,106 @@ Windows APIs (GSMTC & IAudioEndpointVolume)
 Named Pipe / Bridge Server (MessagePack IPC)
     ↓ SystemMediaService (src/server/services/system-media-service.ts)
 NocturneManager (src/server/nocturne-manager.ts)
-    ↓ Bluetooth / RFCOMM RPC
-Car Thing UI (My-Turne / Nocturne UI)
+    ↓ Bluetooth / RFCOMM (RPC Calls & Events)
+Car Thing Daemon / UI (My-Turne / Nocturne)
 ```
 
-## Media Control Separation & Routing
+## RPC Methods vs. Broadcast Events Terminology
 
-There is a distinction between device-facing RPC methods and native host-bridge calls:
+The Connector distinguishes between **RPC calls** (request-response invocations) and **broadcast events** (one-way topic broadcasts over RFCOMM):
 
-- **Device-Facing RPC Methods**: Car Thing daemons call explicit methods such as `media.control.play`, `media.control.pause`, `media.control.next`, `media.control.previous`, `media.control.toggle`, `media.control.shuffle`, `media.control.repeat`, `media.control.volumeUp`, and `media.control.volumeDown`.
-- **Native Host-Bridge RPC**: `SystemMediaService` maps device-facing methods onto a single native host bridge call `media.control` with an `{ action: string }` payload (`play`, `pause`, `stop`, `toggle`, `next`, `previous`, `shuffle`, `repeat`, `volume_up`, `volume_down`).
+1. **Broadcast Events (Connector → Car Thing)**:
+   - `media.now_playing.update`: One-way event containing track metadata (`media_item_attributes`), playback status, app name, playback rate, and timeline position (`playback_attributes`), correlated with `media_generation`.
+   - `media.now_playing.artwork`: One-way event containing Base64-encoded JPEG artwork (max 300px), correlated with `media_generation`.
 
-> **Routing Note for `my-turne`**: Currently in `my-turne`, UI media controls are hardcoded to route toward phone HID / Spotify. Directing media control actions to a connected Windows Connector requires a route-selection change in `my-turne`.
+2. **Device-Facing RPC Methods (Car Thing → Connector)**:
+   - `media.control.play`, `media.control.pause`, `media.control.stop`, `media.control.next`, `media.control.previous` (and alias `media.control.prev`), `media.control.toggle` (and aliases `media.control.playPause`, `media.control.togglePlayPause`), `media.control.shuffle`, `media.control.repeat`, `media.control.volumeUp` (or `media.control.volume_up`), `media.control.volumeDown` (or `media.control.volume_down`), `media.control.like`, `media.control.unlike`.
+   - `volume.get` (or `media.get_volume`), `volume.set` (or `media.set_volume`), `volume.adjust` (or `media.adjust_volume`), `volume.toggleMute` (or `volume.toggle_mute`, `volume.mute`).
+
+3. **Outgoing Device RPC Method (Connector → Car Thing Daemon)**:
+   - `device.volume.update`: Outgoing RPC call from Connector to the Car Thing daemon carrying `{ volume_percent: number, muted?: boolean }`. The daemon handles this call and converts it into a local UI `phone.volume.update` event.
+
+4. **Internal Host-Bridge RPC (SystemMediaService → Native Windows Host)**:
+   - `media.control`: IPC request with `{ action: string }` mapping onto Windows GSMTC APIs or master volume steps (`play`, `pause`, `stop`, `toggle`, `next`, `previous`, `shuffle`, `repeat`, `volume_up`, `volume_down`).
+   - `volume.get`, `volume.set`, `volume.adjust`, `volume.toggleMute`: IPC requests targeting Windows `IAudioEndpointVolume`.
 
 ## Volume Control & Event Flow
 
-The end-to-end master volume update flow is:
+The master volume update flow is:
 
 ```text
 Windows Audio Endpoint (IAudioEndpointVolume) / IMMNotificationClient
-    ↓
-Native Windows Host Bridge emits `device.volume.update` ({ volume_percent, muted })
-    ↓
-SystemMediaService receives event and updates cache
+    ↓ (Native host emits `device.volume.update` IPC event)
+SystemMediaService updates volume cache & deduplicates state
     ↓
 NocturneManager queues and calls daemon `device.volume.update` RPC ({ volume_percent, muted })
     ↓
-Daemon translates into UI `phone.volume.update` event
+Car Thing Daemon translates into UI `phone.volume.update` event
 ```
-
-> **Daemon Compatibility Note**: The current Car Thing daemon processes `volume_percent` from `device.volume.update` but currently drops `muted`. Master volume adjustments work end-to-end, while full mute presentation in the UI requires daemon-side handling of `muted`.
 
 ### Volume RPC Methods
 
-| RPC Method | Parameters | Description |
-| --- | --- | --- |
-| `volume.get` / `media.get_volume` | `{}` | Returns current master volume `{ volume_percent, muted }` |
-| `volume.set` / `media.set_volume` | `{ volume_percent: number }` | Sets master volume to bounded 0–100% |
-| `volume.adjust` / `media.adjust_volume` | `{ delta: number }` | Adjusts master volume by delta percentage |
-| `volume.toggleMute` / `volume.toggle_mute` | `{ muted?: boolean }` | Toggles or explicitly sets mute state |
+| RPC Method | Parameters | Return Shape | Description |
+| --- | --- | --- | --- |
+| `volume.get` / `media.get_volume` | `{}` | `{ volume_percent: number, muted: boolean }` | Gets Windows master volume scalar and mute state |
+| `volume.set` / `media.set_volume` | `{ volume_percent: number }` | `{ status: "ok", volume_percent: number, muted: boolean }` | Sets Windows master volume scalar (bounded 0–100%) |
+| `volume.adjust` / `media.adjust_volume` | `{ delta: number }` | `{ status: "ok", volume_percent: number, muted: boolean }` | Adjusts master volume by integer delta percentage |
+| `volume.toggleMute` / `volume.toggle_mute` | `{ muted?: boolean }` | `{ status: "ok", volume_percent: number, muted: boolean }` | Toggles or explicitly sets master mute state |
 
-## GSMTC Session Handling & Spotify Filtering
+> **Daemon Compatibility Note**: The current Car Thing daemon processes `volume_percent` from `device.volume.update` but currently ignores the `muted` field. Master volume adjustments work end-to-end, while full mute presentation in the UI requires daemon-side handling of `muted`.
 
-1. **GSMTC Current Session**:
-   - The native host polls `GlobalSystemMediaTransportControlsSessionManager.GetCurrentSession()`.
-   - It monitors the currently active system media session provided by Windows.
+## Supported Host Actions & Known Limitations
+
+| Device RPC Method | Native Host Action | GSMTC / Audio API Target | Status & Limitations |
+| --- | --- | --- | --- |
+| `media.control.play` | `play` | `TryPlayAsync()` | Supported |
+| `media.control.pause` | `pause` | `TryPauseAsync()` | Supported |
+| `media.control.stop` | `stop` | `TryStopAsync()` | Supported |
+| `media.control.next` | `next` | `TrySkipNextAsync()` | Supported |
+| `media.control.previous` | `previous` | `TrySkipPreviousAsync()` | Supported |
+| `media.control.toggle` | `toggle` | `TryTogglePlayPauseAsync()` | Supported |
+| `media.control.shuffle` | `shuffle` | `TryChangeShuffleActiveAsync()` | Supported (toggles active shuffle) |
+| `media.control.repeat` | `repeat` | `TryChangeAutoRepeatModeAsync()` | Supported (cycles None → List → Track) |
+| `media.control.volumeUp` | `volume_up` | `IAudioEndpointVolume` step (+6.25%) | Supported (works even with no active media session) |
+| `media.control.volumeDown` | `volume_down` | `IAudioEndpointVolume` step (-6.25%) | Supported (works even with no active media session) |
+| `media.control.like` / `unlike` | `like` / `unlike` | N/A | Returns `{ status: "unsupported" }` (GSMTC lacks a standard track rating API) |
+
+### Session & Fallback Behavior
+
+- When no active Windows media session is running, transport control methods (`play`, `pause`, `next`, `previous`, `toggle`) return `{ status: "unsupported" }` gracefully.
+- Master volume controls (`volume.set`, `volume.adjust`, `volume.toggleMute`, `media.control.volumeUp`, `media.control.volumeDown`) operate directly against Windows `IAudioEndpointVolume` and function independently of active media sessions.
+
+## GSMTC Session Handling & Spotify Filtering Policy
+
+1. **GSMTC Active Session Monitoring**:
+   - The native host monitors `GlobalSystemMediaTransportControlsSessionManager.GetCurrentSession()`.
+   - Any playing audio application registered with Windows GSMTC (browser, desktop player, media service) streams metadata and artwork to the Connector.
 2. **Spotify Filtering Policy**:
-   - **Spotify Linked**: When a Spotify account is linked in Nocturne, direct Spotify API/WebSocket integration owns Spotify playback. If `GetCurrentSession()` returns a Spotify source, the native host/Connector suppresses those media events without switching to another media player session.
-   - **Spotify Skipped / Unlinked**: When Spotify is skipped or unlinked, GSMTC handles all system media sources, including Spotify desktop, web browser playback, and local media applications. `SystemMediaService` remains forced active while Spotify is marked skipped (`spotify-skipped.json`).
+   - **Spotify Linked**: When a Spotify account is linked in Nocturne/Connector, direct Spotify Web API + WebSocket integration handles Spotify playback. If `GetCurrentSession()` reports a Spotify source, GSMTC media events are suppressed to prevent duplicate metadata or state collisions.
+   - **Spotify Skipped / Unlinked**: When Spotify is skipped or unlinked, GSMTC handles all system media sources, including Spotify desktop, web browsers, and local players. `SystemMediaService` remains forced active while Spotify is marked skipped (`spotify-skipped.json`).
 
-## Events Broadcasted to Car Thing
+## Replay & Timeline Rebase on Reconnect
 
-| Event Topic | Payload Shape | Description |
-| --- | --- | --- |
-| `media.now_playing.update` | `{ media_item_attributes, playback_attributes, media_generation }` | Broadcasts current track metadata, duration, playback status, app name, and projected elapsed time |
-| `media.now_playing.artwork` | `{ data: string, content_type: "image/jpeg", media_generation: number }` | Base64 JPEG artwork scaled to max 300px |
+- Upon Car Thing connection or UI ready handshake (`app.ready`), `SystemMediaService.replayLatest()` rebases playing track progress (`PlaybackElapsedTimeInMilliseconds`) based on `PlaybackRate` and elapsed time since update emission:
+  $$\text{projected\_ms} = \text{elapsed\_ms} + (\text{now\_ms} - \text{received\_at\_ms}) \times \text{playback\_rate}$$
+- Bounded by track duration. Paused tracks are not projected. Artwork is re-emitted if its generation matches the active now-playing update.
 
-> **Note on Volume Communication**: Volume changes from the Windows audio endpoint are sent to the daemon as a `device.volume.update` RPC call (rather than a broadcast event topic), which the daemon then converts into a `phone.volume.update` event for the Car Thing UI.
+## `my-turne` Integration Requirement
 
-## Payload Casing & Compatibility
+> **Cross-Repo Requirement (`my-turne`)**:
+> In the existing `my-turne` daemon/UI implementation, hardware media control buttons and UI control widgets are hardcoded to direct commands toward Phone HID / Spotify.
+> To direct media controls to the Windows Connector:
+> 1. `my-turne` must select the Windows Connector as its active media controller when connected to Windows.
+> 2. `my-turne` daemon must forward UI media button presses as `media.control.*` or `volume.*` RPC calls to the Windows Connector.
 
-- Canonical outgoing wire fields use `snake_case` (`media_item_attributes`, `playback_attributes`, `media_generation`, `volume_percent`).
-- The exported `normalizeNowPlayingUpdate` helper in `system-media-service.ts` accepts both legacy `camelCase` and canonical `snake_case` inputs from native bridges.
+## Hardware Validation Checklist
 
-## Replay & Timeline Rebase
+Use this checklist when validating physical or virtual Car Thing hardware connected to the Windows Connector:
 
-- Upon Car Thing connection or UI replay requests, `SystemMediaService.replayLatest()` rebases playing track progress (`PlaybackElapsedTimeInMilliseconds`) based on `PlaybackRate` and elapsed time since update emission, ensuring track progress is accurately displayed on the Car Thing without moving backward.
-
-## Validation Checklist & Gap Analysis
-
-When testing My-Turne integration with the Windows Connector:
-
-- [ ] **Browser Media**: Play audio/video in Chrome/Edge/Firefox. Verify track title, artist, play/pause state, and timeline updates reach the Car Thing.
-- [ ] **Desktop Media Players**: Play media in a native Windows player (e.g., Windows Media Player / Foobar2000 / VLC). Verify metadata, artwork, and playback controls (`media.control.*`).
-- [ ] **Spotify Desktop (Unlinked / Skipped)**: Verify Spotify desktop playback appears via GSMTC when Spotify account is skipped/unlinked in Connector.
-- [ ] **Spotify Desktop (Linked)**: Verify GSMTC suppresses Spotify system media events when Spotify account is linked.
-- [ ] **Volume Controls**: Trigger volume adjustment from Car Thing and Windows system tray. Confirm `volume.set`, `volume.adjust`, or `volume.toggleMute` RPCs update Windows master volume, and native volume notifications trigger `device.volume.update` RPC to daemon.
-- [ ] **Cross-Repo Gap (`my-turne`)**: Ensure `my-turne` daemon routes media RPC calls to Windows when Windows Connector is selected over Phone HID.
+- [ ] **Chrome / Edge / Firefox Media**: Play audio or video (e.g. YouTube, Soundcloud) in a browser. Confirm track title, artist, play/pause status, and projected timeline appear on Car Thing.
+- [ ] **Native Windows Player**: Play audio in VLC, Windows Media Player, or Foobar2000. Confirm track metadata, album artwork (JPEG max 300px), and play/pause/skip controls work.
+- [ ] **Spotify Desktop (Unlinked / Skipped)**: Play media in Spotify Desktop with Spotify account unlinked/skipped in Connector. Confirm track updates arrive via GSMTC.
+- [ ] **Spotify Desktop (Linked)**: Link Spotify in Connector. Confirm GSMTC suppresses Spotify system media events while Spotify direct API/WS integration takes over.
+- [ ] **Master Volume Controls**: Change volume from Car Thing dial and Windows system tray. Confirm `volume.set` and `device.volume.update` bidirectional sync works.
+- [ ] **No Media Session Fallback**: Close all media players. Confirm volume controls continue working and transport controls return `unsupported` without crashing.
+- [ ] **Device Reconnect**: Disconnect and reconnect Bluetooth RFCOMM. Confirm `replayLatest()` instantly restores current track metadata, artwork, and rebased progress on Car Thing.
