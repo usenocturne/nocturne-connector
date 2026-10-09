@@ -75,7 +75,7 @@ Daemon translates into UI `phone.volume.update` event
 ## Payload Casing & Compatibility
 
 - Canonical outgoing wire fields use `snake_case` (`media_item_attributes`, `playback_attributes`, `media_generation`, `volume_percent`).
-- `SystemMediaService.normalizeNowPlayingUpdate` accepts both legacy `camelCase` and canonical `snake_case` inputs from native bridges.
+- The exported `normalizeNowPlayingUpdate` helper in `system-media-service.ts` accepts both legacy `camelCase` and canonical `snake_case` inputs from native bridges.
 
 ## Replay & Timeline Rebase
 
@@ -89,5 +89,5 @@ When testing My-Turne integration with the Windows Connector:
 - [ ] **Desktop Media Players**: Play media in a native Windows player (e.g., Windows Media Player / Foobar2000 / VLC). Verify metadata, artwork, and playback controls (`media.control.*`).
 - [ ] **Spotify Desktop (Unlinked / Skipped)**: Verify Spotify desktop playback appears via GSMTC when Spotify account is skipped/unlinked in Connector.
 - [ ] **Spotify Desktop (Linked)**: Verify GSMTC suppresses Spotify system media events when Spotify account is linked.
-- [ ] **Volume Controls**: Trigger volume adjustment from Car Thing and Windows system tray. Confirm `device.volume.update` RPC call updates master volume on Windows and daemon.
+- [ ] **Volume Controls**: Trigger volume adjustment from Car Thing and Windows system tray. Confirm `volume.set`, `volume.adjust`, or `volume.toggleMute` RPCs update Windows master volume, and native volume notifications trigger `device.volume.update` RPC to daemon.
 - [ ] **Cross-Repo Gap (`my-turne`)**: Ensure `my-turne` daemon routes media RPC calls to Windows when Windows Connector is selected over Phone HID.
