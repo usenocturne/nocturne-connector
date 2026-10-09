@@ -6,6 +6,14 @@ import {
   normalizeDeviceInfo,
 } from "./nocturne-manager";
 
+// Capability and metadata tests never use native Bluetooth hardware.
+const fakeBluetoothService: any = {
+  initialize: async () => {},
+  rfcommServer: { setDataHandler: () => {} },
+  rfcommOutbound: { setDataHandler: () => {} },
+  onEvent: () => {},
+};
+
 describe("device info", () => {
   test("normalizes the daemon's canonical snake-case response", () => {
     expect(
@@ -49,7 +57,7 @@ describe("device info", () => {
 describe("sendAppReady", () => {
   test("includes connectorPlatform: 'windows' on win32 while keeping platform: 'web'", async () => {
     const { NocturneManager } = await import("./nocturne-manager");
-    const manager = new NocturneManager({ platform: "win32" });
+    const manager = new NocturneManager({ platform: "win32", bluetoothService: fakeBluetoothService });
 
     let broadcastTopic = "";
     let broadcastData: any = null;
@@ -83,7 +91,7 @@ describe("sendAppReady", () => {
 
   test("does not include connectorPlatform on non-Windows platforms (e.g. linux)", async () => {
     const { NocturneManager } = await import("./nocturne-manager");
-    const manager = new NocturneManager({ platform: "linux" });
+    const manager = new NocturneManager({ platform: "linux", bluetoothService: fakeBluetoothService });
 
     let broadcastData: any = null;
     (manager as any).broadcastToDevices = async (topic: string, data: any) => {
@@ -104,7 +112,7 @@ describe("sendAppReady", () => {
 describe("capabilities", () => {
   test("returns false for volume and media when systemMediaService is null", async () => {
     const { NocturneManager } = await import("./nocturne-manager");
-    const manager = new NocturneManager({ platform: "linux" });
+    const manager = new NocturneManager({ platform: "linux", bluetoothService: fakeBluetoothService });
     expect(manager.getCapabilities()).toEqual({
       volume: false,
       media: false,
@@ -130,6 +138,7 @@ describe("capabilities", () => {
     const manager = new NocturneManager({
       platform: "win32",
       hostBridge: mockHostBridge,
+      bluetoothService: fakeBluetoothService,
       systemMediaPreferenceStore: memoryStore,
     });
 
@@ -149,6 +158,20 @@ describe("capabilities", () => {
     expect(manager.getCapabilities().volume).toBeTrue();
     expect(manager.getCapabilities().media).toBeTrue();
 
+    let readyPayload: any = null;
+    (manager as any).broadcastToDevices = async (topic: string, data: any) => {
+      if (topic === "app.ready") readyPayload = data;
+    };
+    await (manager as any).sendAppReady();
+    expect(readyPayload).toMatchObject({
+      platform: "web",
+      connectorPlatform: "windows",
+      capabilities: { volume: true, media: true },
+    });
+    expect(await manager.onCall("1", "connector.capabilities", {})).toEqual({
+      result: { capabilities: readyPayload.capabilities },
+    });
+
     // Disabling system media deactivates media, but volume remains independently available -> media: false, volume: true
     await manager.systemMediaService?.setSystemMediaEnabled(false);
     expect(manager.getCapabilities()).toEqual({
@@ -159,6 +182,12 @@ describe("capabilities", () => {
       macros: false,
       appLaunch: false,
     });
+    await (manager as any).sendAppReady();
+    expect(readyPayload.capabilities).toEqual(manager.getCapabilities());
+    expect(await manager.onCall("2", "connector.capabilities", {})).toEqual({
+      result: { capabilities: readyPayload.capabilities },
+    });
+    await manager.systemMediaService?.stop();
   });
 
   test("media capability is false when system media startup fails", async () => {
@@ -170,12 +199,6 @@ describe("capabilities", () => {
       },
       onEvent: () => () => {},
       close: () => {},
-    };
-    const fakeBluetoothService: any = {
-      initialize: async () => {},
-      rfcommServer: { setDataHandler: () => {} },
-      rfcommOutbound: { setDataHandler: () => {} },
-      onEvent: () => {},
     };
     const manager = new NocturneManager({
       platform: "win32",
@@ -203,7 +226,7 @@ describe("capabilities", () => {
       onEvent: () => () => {},
       close: () => {},
     };
-    const manager = new NocturneManager({ platform: "win32", hostBridge: unsupportedBridge });
+    const manager = new NocturneManager({ platform: "win32", hostBridge: unsupportedBridge, bluetoothService: fakeBluetoothService });
     await manager.systemMediaService?.start();
 
     expect(await manager.systemMediaService?.getVolume()).toBeNull();
@@ -212,7 +235,7 @@ describe("capabilities", () => {
 
   test("responds to canonical connector.capabilities RPC query matching getCapabilities() and app.ready", async () => {
     const { NocturneManager } = await import("./nocturne-manager");
-    const manager = new NocturneManager({ platform: "linux" });
+    const manager = new NocturneManager({ platform: "linux", bluetoothService: fakeBluetoothService });
     const caps = manager.getCapabilities();
 
     let readyPayload: any = null;

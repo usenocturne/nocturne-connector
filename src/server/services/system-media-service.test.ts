@@ -224,7 +224,7 @@ describe("SystemMediaService", () => {
 
       async call<TResult = unknown>(method: string, params: unknown = {}): Promise<TResult> {
         this.calls.push({ method, params });
-        if (method === "volume.get") {
+        if (method === "volume.get" || method === "media.get_volume") {
           return { volume_percent: this.vol, muted: this.muted } as TResult;
         } else if (method === "volume.set") {
           const p = params as { volume_percent: number };
@@ -242,6 +242,10 @@ describe("SystemMediaService", () => {
     await service.start();
 
     expect(service.isActive).toBeFalse(); // playback integration inactive
+    expect(service.isVolumeSupported).toBeTrue();
+    expect(service.currentVolumePercent).toBe(30);
+    expect(host.calls).toContainEqual({ method: "media.get_volume", params: {} });
+    expect(host.calls.some(({ method }) => method === "media.start")).toBeFalse();
 
     // Volume commands should still succeed!
     const setRes = await service.setVolume(60);

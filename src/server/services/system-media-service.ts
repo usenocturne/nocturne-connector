@@ -145,11 +145,7 @@ export class SystemMediaService {
     this.volumeUnsubscribe = this.hostBridge.onEvent("device.volume.update", (data) => {
       this.handleVolume(data);
     });
-    try {
-      await this.refreshVolume();
-    } catch {
-      // Ignore initial volume refresh failure during start
-    }
+    await this.refreshVolume();
     await this.applyActivation();
   }
 
@@ -506,7 +502,12 @@ export class SystemMediaService {
 
   private async refreshVolume(): Promise<void> {
     try {
-      const response = await this.hostBridge.call<unknown>("media.get_volume", {});
+      // Dedicated calls bound connection establishment as well as the response wait.
+      // An optional volume probe must not hold up Bluetooth startup.
+      const response = await this.hostBridge.call<unknown>("media.get_volume", {}, {
+        priority: true,
+        timeoutMs: 250,
+      });
       const rec = asRecord(response);
       if (rec?.status === "unsupported") {
         this.volumeSupported = false;

@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import type { HostBridgeClient } from "./platform/host-bridge";
+import { HostBridge, frame, type HostBridgeClient } from "./platform/host-bridge";
+import { decode } from "@msgpack/msgpack";
+import { createServer, type Socket } from "node:net";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { NocturneManager } from "./nocturne-manager";
 import {
   BluetoothService,
@@ -105,6 +110,92 @@ function fakeBluetoothService(): BluetoothService {
 }
 
 describe("NocturneManager system media routing", () => {
+  test("a stalled native volume probe does not hold up Bluetooth initialization", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "connector-volume-"));
+    const path = join(directory, "host.sock");
+    const peers = new Set<Socket>();
+    let probePeer: Socket | undefined;
+    const server = createServer((socket) => {
+      peers.add(socket);
+      socket.on("close", () => peers.delete(socket));
+      let buffer = Buffer.alloc(0);
+      socket.on("data", (data) => {
+        buffer = Buffer.concat([buffer, Buffer.from(data)]);
+        while (buffer.length >= 4) {
+          const length = buffer.readUInt32LE(0);
+          if (buffer.length < 4 + length) return;
+          const request = decode(buffer.subarray(4, 4 + length)) as {
+            id: number; generation: number; method: string;
+          };
+          buffer = buffer.subarray(4 + length);
+          if (request.method === "media.get_volume") {
+            probePeer = socket; // Native volume endpoint never responds.
+          } else {
+            socket.write(frame({ type: "response", id: request.id,
+              generation: request.generation, result: {} }));
+          }
+        }
+      });
+    });
+    const hostBridge = new HostBridge(path, "test-token");
+    const bluetoothService = fakeBluetoothService();
+    let bluetoothInitialized = false;
+    const initializeBluetooth = bluetoothService.initialize.bind(bluetoothService);
+    bluetoothService.initialize = async () => {
+      bluetoothInitialized = true;
+      await initializeBluetooth();
+    };
+    const manager = new NocturneManager({
+      platform: "win32", hostBridge, bluetoothService,
+      spotifySkipPreferenceStore: new MemoryBooleanPreference(false),
+      systemMediaPreferenceStore: new MemoryBooleanPreference(true),
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(path, resolve);
+      });
+      const startedAt = performance.now();
+      await manager.initializeOffline();
+      expect(performance.now() - startedAt).toBeLessThan(1_000);
+      expect(bluetoothInitialized).toBeTrue();
+      expect(probePeer).toBeDefined();
+      expect(manager.getCapabilities()).toMatchObject({ volume: false, media: true });
+      await Bun.sleep(10);
+      expect(probePeer?.destroyed).toBeTrue();
+      await manager.systemMediaService?.stop();
+    } finally {
+      hostBridge.close();
+      for (const socket of peers) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("an unavailable native host leaves capabilities false and Bluetooth initialized", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "connector-volume-"));
+    const hostBridge = new HostBridge(join(directory, "missing.sock"), "test-token");
+    const bluetoothService = fakeBluetoothService();
+    let bluetoothInitialized = false;
+    bluetoothService.initialize = async () => { bluetoothInitialized = true; };
+    const manager = new NocturneManager({
+      platform: "win32", hostBridge, bluetoothService,
+      spotifySkipPreferenceStore: new MemoryBooleanPreference(false),
+      systemMediaPreferenceStore: new MemoryBooleanPreference(true),
+    });
+    try {
+      const startedAt = performance.now();
+      await manager.initializeOffline();
+      expect(performance.now() - startedAt).toBeLessThan(1_000);
+      expect(bluetoothInitialized).toBeTrue();
+      expect(manager.getCapabilities()).toMatchObject({ volume: false, media: false });
+      await manager.systemMediaService?.stop();
+    } finally {
+      hostBridge.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("forces stored-disabled system media on when Spotify was skipped", async () => {
     const hostBridge = new FakeMediaHostBridge();
     const manager = new NocturneManager({
