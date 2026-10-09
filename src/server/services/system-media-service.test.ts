@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { HostBridgeClient } from "../platform/host-bridge";
 import {
   mediaControlAction,
@@ -92,6 +92,44 @@ class MemoryPreferenceStore implements SystemMediaPreferenceStore {
 }
 
 describe("SystemMediaService", () => {
+  for (const failure of ["unsupported", "error"] as const) {
+    test(`a late ${failure} probe preserves volume support recovered while media is disabled`, async () => {
+      let finishProbe!: (response: unknown) => void;
+      let failProbe!: (error: Error) => void;
+      const pendingProbe = new Promise<unknown>((resolve, reject) => {
+        finishProbe = resolve;
+        failProbe = reject;
+      });
+      class StalledVolumeBridge extends FakeHostBridge {
+        async call<TResult = unknown>(method: string, params: unknown = {}): Promise<TResult> {
+          if (method === "media.get_volume") return await pendingProbe as TResult;
+          if (method === "volume.get") return { volume_percent: 42, muted: false } as TResult;
+          return super.call(method, params);
+        }
+      }
+      const host = new StalledVolumeBridge();
+      const service = new SystemMediaService(host, new RecordingSink(), new MemoryPreferenceStore(false));
+      const refresh = spyOn(service as any, "refreshVolume");
+      try {
+        await service.start(); // Completes while the probe is still pending.
+        expect(service.isActive).toBeFalse();
+        expect(service.isVolumeSupported).toBeFalse();
+        host.emit("device.volume.update", { volume_percent: 35, muted: false });
+        expect(service.isVolumeSupported).toBeTrue();
+        expect(await service.getVolume()).toEqual({ volume_percent: 42, muted: false });
+        if (failure === "error") failProbe(new Error("Native probe failed"));
+        else finishProbe({ status: "unsupported" });
+        await refresh.mock.results[0]!.value;
+        expect(service.isVolumeSupported).toBeTrue();
+        expect(service.currentVolumePercent).toBe(42);
+        await service.stop();
+      } finally {
+        finishProbe({ status: "unsupported" });
+        refresh.mockRestore();
+      }
+    });
+  }
+
   test("supports getVolume, setVolume, adjustVolume, and toggleMute volume RPCs", async () => {
     class FakeVolumeHostBridge extends FakeHostBridge {
       vol = 40;
