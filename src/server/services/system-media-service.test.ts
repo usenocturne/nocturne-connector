@@ -92,6 +92,37 @@ class MemoryPreferenceStore implements SystemMediaPreferenceStore {
 }
 
 describe("SystemMediaService", () => {
+  test("a late successful initial probe cannot overwrite a newer volume update", async () => {
+    let finishProbe!: (response: unknown) => void;
+    const pendingProbe = new Promise<unknown>((resolve) => { finishProbe = resolve; });
+    class StalledVolumeBridge extends FakeHostBridge {
+      async call<TResult = unknown>(method: string, params: unknown = {}): Promise<TResult> {
+        if (method === "media.get_volume") return await pendingProbe as TResult;
+        return super.call(method, params);
+      }
+    }
+    const host = new StalledVolumeBridge();
+    const sink = new RecordingSink();
+    const service = new SystemMediaService(host, sink, new MemoryPreferenceStore(false));
+    const refresh = spyOn(service as any, "refreshVolume");
+    try {
+      await service.start();
+      expect(service.isVolumeSupported).toBeFalse();
+      host.emit("device.volume.update", { volume_percent: 75, muted: true });
+      finishProbe({ volume_percent: 30, muted: false });
+      await refresh.mock.results[0]!.value;
+      await service.whenIdle();
+      expect(service.currentVolumePercent).toBe(75);
+      expect(service.currentMuted).toBeTrue();
+      expect(service.isVolumeSupported).toBeTrue();
+      expect(sink.deliveries).toEqual([{ kind: "volume", volumePercent: 75, muted: true }]);
+      await service.stop();
+    } finally {
+      finishProbe({ status: "unsupported" });
+      refresh.mockRestore();
+    }
+  });
+
   for (const failure of ["unsupported", "error"] as const) {
     test(`a late ${failure} probe preserves volume support recovered while media is disabled`, async () => {
       let finishProbe!: (response: unknown) => void;

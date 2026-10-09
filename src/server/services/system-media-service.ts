@@ -103,6 +103,7 @@ export class SystemMediaService {
   private volumePercent: number | null = null;
   private muted: boolean | null = null;
   private volumeSupported = false;
+  private volumeRevision = 0;
   private volumeUnsubscribe: (() => void) | null = null;
 
   constructor(
@@ -204,6 +205,7 @@ export class SystemMediaService {
       return null;
     }
     const muted = typeof rec.muted === "boolean" ? rec.muted : false;
+    this.volumeRevision++;
     this.volumePercent = volume_percent;
     this.muted = muted;
     this.volumeSupported = true;
@@ -228,6 +230,7 @@ export class SystemMediaService {
       this.volumeSupported = false;
       return { status: "unsupported" };
     }
+    this.volumeRevision++;
     this.volumePercent = volume_percent;
     this.muted = muted;
     this.volumeSupported = true;
@@ -251,6 +254,7 @@ export class SystemMediaService {
       this.volumeSupported = false;
       return { status: "unsupported" };
     }
+    this.volumeRevision++;
     this.volumePercent = volume_percent;
     this.muted = muted;
     this.volumeSupported = true;
@@ -278,6 +282,7 @@ export class SystemMediaService {
       this.volumeSupported = false;
       return { status: "unsupported" };
     }
+    this.volumeRevision++;
     this.volumePercent = volume_percent;
     this.muted = muted;
     this.volumeSupported = true;
@@ -492,6 +497,7 @@ export class SystemMediaService {
     );
     const muted = typeof rec?.muted === "boolean" ? rec.muted : undefined;
     if (percent === null) return;
+    this.volumeRevision++;
     this.volumeSupported = true;
     if (percent === this.volumePercent && muted === this.muted) return;
     this.volumePercent = percent;
@@ -502,13 +508,17 @@ export class SystemMediaService {
   }
 
   private async refreshVolume(): Promise<void> {
+    const revision = this.volumeRevision;
     try {
       const response = await this.hostBridge.call<unknown>("media.get_volume", {});
       const rec = asRecord(response);
       if (rec?.status === "unsupported") {
         return;
       }
-      if (this.lifecycleStarted) this.handleVolume(response);
+      // A newer successful event or RPC owns the cached state, even if unchanged.
+      if (this.lifecycleStarted && this.volumeRevision === revision) {
+        this.handleVolume(response);
+      }
     } catch {
       // Keep any capability already verified by a newer volume event or RPC.
     }
