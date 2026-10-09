@@ -598,12 +598,7 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
         return { result: { device: "nocturne-connector", version: getConnectorVersion() } };
       }
 
-      if (
-        method === "connector.capabilities" ||
-        method === "host.capabilities" ||
-        method === "connector.get_capabilities" ||
-        method === "capabilities.get"
-      ) {
+      if (method === "connector.capabilities") {
         return { result: { capabilities: this.getCapabilities() } };
       }
 
@@ -1251,10 +1246,11 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   }
 
   getCapabilities(): ConnectorCapabilities {
-    const hasSystemMedia = this.systemMediaService !== null;
+    const mediaActive = this.systemMediaService?.isActive ?? false;
+    const volumeSupported = this.systemMediaService?.isVolumeSupported ?? false;
     return {
-      volume: hasSystemMedia,
-      media: hasSystemMedia,
+      volume: volumeSupported,
+      media: mediaActive,
       discord: false,
       systemStats: false,
       macros: false,

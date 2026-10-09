@@ -636,6 +636,29 @@ describe("SystemMediaService", () => {
     });
     await service.stop();
   });
+
+  test("tracks volume support independently and marks isVolumeSupported false when volume RPCs return unsupported", async () => {
+    class UnsupportedVolumeBridge extends FakeHostBridge {
+      async call<TResult = unknown>(method: string, params: unknown = {}): Promise<TResult> {
+        this.calls.push({ method, params });
+        if (method === "volume.get") {
+          return { status: "unsupported" } as TResult;
+        }
+        return super.call(method, params);
+      }
+    }
+
+    const host = new UnsupportedVolumeBridge();
+    const service = new SystemMediaService(host, new RecordingSink());
+    await service.start();
+
+    expect(service.isVolumeSupported).toBeTrue();
+    const res = await service.getVolume();
+    expect(res).toBeNull();
+    expect(service.isVolumeSupported).toBeFalse();
+
+    await service.stop();
+  });
 });
 
 describe("normalizeNowPlayingUpdate", () => {

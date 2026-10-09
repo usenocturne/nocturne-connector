@@ -102,6 +102,7 @@ export class SystemMediaService {
   private forcedOn = false;
   private volumePercent: number | null = null;
   private muted: boolean | null = null;
+  private volumeSupported = true;
   private volumeUnsubscribe: (() => void) | null = null;
 
   constructor(
@@ -132,6 +133,10 @@ export class SystemMediaService {
 
   get isActive(): boolean {
     return this.active;
+  }
+
+  get isVolumeSupported(): boolean {
+    return this.volumeSupported;
   }
 
   async start(): Promise<void> {
@@ -179,15 +184,27 @@ export class SystemMediaService {
   }
 
   async getVolume(): Promise<{ volume_percent: number; muted: boolean } | null> {
-    const response = await this.hostBridge.call<unknown>("volume.get", {});
-    const rec = asRecord(response);
-    if (!rec || rec.status === "unsupported") return null;
-    const volume_percent = normalizeVolumePercent(rec.volume_percent ?? rec.volumePercent);
-    if (volume_percent === null) return null;
-    const muted = typeof rec.muted === "boolean" ? rec.muted : false;
-    this.volumePercent = volume_percent;
-    this.muted = muted;
-    return { volume_percent, muted };
+    try {
+      const response = await this.hostBridge.call<unknown>("volume.get", {});
+      const rec = asRecord(response);
+      if (!rec || rec.status === "unsupported") {
+        this.volumeSupported = false;
+        return null;
+      }
+      const volume_percent = normalizeVolumePercent(rec.volume_percent ?? rec.volumePercent);
+      if (volume_percent === null) {
+        this.volumeSupported = false;
+        return null;
+      }
+      const muted = typeof rec.muted === "boolean" ? rec.muted : false;
+      this.volumePercent = volume_percent;
+      this.muted = muted;
+      this.volumeSupported = true;
+      return { volume_percent, muted };
+    } catch {
+      this.volumeSupported = false;
+      return null;
+    }
   }
 
   async setVolume(percent: number): Promise<{ status: string; volume_percent?: number; muted?: boolean } | null> {
@@ -198,14 +215,19 @@ export class SystemMediaService {
     const response = await this.hostBridge.call<unknown>("volume.set", { volume_percent: bounded });
     const rec = asRecord(response);
     const status = (rec?.status as string) ?? "unsupported";
-    if (status !== "ok") return { status };
+    if (status !== "ok") {
+      this.volumeSupported = false;
+      return { status };
+    }
     const volume_percent = normalizeVolumePercent(rec?.volume_percent ?? rec?.volumePercent);
     const muted = typeof rec?.muted === "boolean" ? rec.muted : undefined;
     if (volume_percent === null || muted === undefined) {
+      this.volumeSupported = false;
       return { status: "unsupported" };
     }
     this.volumePercent = volume_percent;
     this.muted = muted;
+    this.volumeSupported = true;
     return { status: "ok", volume_percent, muted };
   }
 
@@ -216,14 +238,19 @@ export class SystemMediaService {
     const response = await this.hostBridge.call<unknown>("volume.adjust", { delta: Math.round(delta) });
     const rec = asRecord(response);
     const status = (rec?.status as string) ?? "unsupported";
-    if (status !== "ok") return { status };
+    if (status !== "ok") {
+      this.volumeSupported = false;
+      return { status };
+    }
     const volume_percent = normalizeVolumePercent(rec?.volume_percent ?? rec?.volumePercent);
     const muted = typeof rec?.muted === "boolean" ? rec.muted : undefined;
     if (volume_percent === null || muted === undefined) {
+      this.volumeSupported = false;
       return { status: "unsupported" };
     }
     this.volumePercent = volume_percent;
     this.muted = muted;
+    this.volumeSupported = true;
     return { status: "ok", volume_percent, muted };
   }
 
@@ -238,14 +265,19 @@ export class SystemMediaService {
     const response = await this.hostBridge.call<unknown>("volume.toggleMute", params);
     const rec = asRecord(response);
     const status = (rec?.status as string) ?? "unsupported";
-    if (status !== "ok") return { status };
+    if (status !== "ok") {
+      this.volumeSupported = false;
+      return { status };
+    }
     const volume_percent = normalizeVolumePercent(rec?.volume_percent ?? rec?.volumePercent);
     const muted = typeof rec?.muted === "boolean" ? rec.muted : undefined;
     if (volume_percent === null || muted === undefined) {
+      this.volumeSupported = false;
       return { status: "unsupported" };
     }
     this.volumePercent = volume_percent;
     this.muted = muted;
+    this.volumeSupported = true;
     return { status: "ok", volume_percent, muted };
   }
 
@@ -453,11 +485,16 @@ export class SystemMediaService {
 
   private handleVolume(data: unknown): void {
     const rec = asRecord(data);
+    if (rec?.status === "unsupported") {
+      this.volumeSupported = false;
+      return;
+    }
     const percent = normalizeVolumePercent(
       rec?.volume_percent ?? rec?.volumePercent,
     );
     const muted = typeof rec?.muted === "boolean" ? rec.muted : undefined;
     if (percent === null) return;
+    this.volumeSupported = true;
     if (percent === this.volumePercent && muted === this.muted) return;
     this.volumePercent = percent;
     if (muted !== undefined) {

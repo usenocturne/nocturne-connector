@@ -115,17 +115,43 @@ describe("capabilities", () => {
     });
   });
 
-  test("returns true for volume and media when systemMediaService is initialized", async () => {
+  test("media capability reflects active state while volume remains available independently", async () => {
     const { NocturneManager } = await import("./nocturne-manager");
     const mockHostBridge: any = {
-      call: async () => ({}),
+      call: async () => ({ status: "ok", volume_percent: 50, muted: false }),
       onEvent: () => () => {},
       close: () => {},
     };
-    const manager = new NocturneManager({ platform: "win32", hostBridge: mockHostBridge });
+    const memoryStore: any = {
+      enabled: true,
+      load() { return this.enabled; },
+      save(enabled: boolean) { this.enabled = enabled; },
+    };
+    const manager = new NocturneManager({
+      platform: "win32",
+      hostBridge: mockHostBridge,
+      systemMediaPreferenceStore: memoryStore,
+    });
+
+    // Before offline initialization / start, media is inactive -> media: false, volume: true
     expect(manager.getCapabilities()).toEqual({
       volume: true,
-      media: true,
+      media: false,
+      discord: false,
+      systemStats: false,
+      macros: false,
+      appLaunch: false,
+    });
+
+    // After starting system media, media becomes active -> media: true, volume: true
+    await manager.systemMediaService?.start();
+    expect(manager.getCapabilities().media).toBeTrue();
+
+    // Disabling system media deactivates media, but volume remains independently available -> media: false, volume: true
+    await manager.systemMediaService?.setSystemMediaEnabled(false);
+    expect(manager.getCapabilities()).toEqual({
+      volume: true,
+      media: false,
       discord: false,
       systemStats: false,
       macros: false,
@@ -133,26 +159,60 @@ describe("capabilities", () => {
     });
   });
 
-  test("responds to capability RPC queries via onCall", async () => {
+  test("media capability is false when system media startup fails", async () => {
+    const { NocturneManager } = await import("./nocturne-manager");
+    const failingHostBridge: any = {
+      call: async (method: string) => {
+        if (method === "media.start") throw new Error("Host bridge connection failed");
+        return { status: "ok", volume_percent: 50 };
+      },
+      onEvent: () => () => {},
+      close: () => {},
+    };
+    const manager = new NocturneManager({ platform: "win32", hostBridge: failingHostBridge });
+
+    await manager.initializeOffline();
+
+    // Since media.start threw during activation, media remains inactive -> media: false
+    expect(manager.getCapabilities().media).toBeFalse();
+    // Volume remains supported
+    expect(manager.getCapabilities().volume).toBeTrue();
+  });
+
+  test("volume capability becomes false when volume endpoint is unsupported", async () => {
+    const { NocturneManager } = await import("./nocturne-manager");
+    const unsupportedBridge: any = {
+      call: async (method: string) => {
+        if (method === "volume.get" || method === "media.get_volume") {
+          return { status: "unsupported" };
+        }
+        return { status: "ok" };
+      },
+      onEvent: () => () => {},
+      close: () => {},
+    };
+    const manager = new NocturneManager({ platform: "win32", hostBridge: unsupportedBridge });
+    await manager.systemMediaService?.start();
+
+    expect(await manager.systemMediaService?.getVolume()).toBeNull();
+    expect(manager.getCapabilities().volume).toBeFalse();
+  });
+
+  test("responds to canonical connector.capabilities RPC query matching getCapabilities() and app.ready", async () => {
     const { NocturneManager } = await import("./nocturne-manager");
     const manager = new NocturneManager({ platform: "linux" });
-    const expected = {
-      result: {
-        capabilities: {
-          volume: false,
-          media: false,
-          discord: false,
-          systemStats: false,
-          macros: false,
-          appLaunch: false,
-        },
-      },
-    };
+    const caps = manager.getCapabilities();
 
-    expect(await manager.onCall("1", "connector.capabilities", {})).toEqual(expected);
-    expect(await manager.onCall("1", "host.capabilities", {})).toEqual(expected);
-    expect(await manager.onCall("1", "connector.get_capabilities", {})).toEqual(expected);
-    expect(await manager.onCall("1", "capabilities.get", {})).toEqual(expected);
+    let readyPayload: any = null;
+    (manager as any).broadcastToDevices = async (topic: string, data: any) => {
+      if (topic === "app.ready") readyPayload = data;
+    };
+    await (manager as any).sendAppReady();
+
+    expect(readyPayload.capabilities).toEqual(caps);
+
+    const rpcResponse = await manager.onCall("1", "connector.capabilities", {});
+    expect(rpcResponse).toEqual({ result: { capabilities: caps } });
   });
 });
 
