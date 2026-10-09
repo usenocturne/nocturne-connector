@@ -133,9 +133,9 @@ describe("capabilities", () => {
       systemMediaPreferenceStore: memoryStore,
     });
 
-    // Before offline initialization / start, media is inactive -> media: false, volume: true
+    // Before start / verification, volume and media are unconfirmed -> volume: false, media: false
     expect(manager.getCapabilities()).toEqual({
-      volume: true,
+      volume: false,
       media: false,
       discord: false,
       systemStats: false,
@@ -143,8 +143,10 @@ describe("capabilities", () => {
       appLaunch: false,
     });
 
-    // After starting system media, media becomes active -> media: true, volume: true
+    // After starting system media, volume probe succeeds and media becomes active -> volume: true, media: true
     await manager.systemMediaService?.start();
+    await manager.systemMediaService?.whenIdle();
+    expect(manager.getCapabilities().volume).toBeTrue();
     expect(manager.getCapabilities().media).toBeTrue();
 
     // Disabling system media deactivates media, but volume remains independently available -> media: false, volume: true
@@ -169,7 +171,17 @@ describe("capabilities", () => {
       onEvent: () => () => {},
       close: () => {},
     };
-    const manager = new NocturneManager({ platform: "win32", hostBridge: failingHostBridge });
+    const fakeBluetoothService: any = {
+      initialize: async () => {},
+      rfcommServer: { setDataHandler: () => {} },
+      rfcommOutbound: { setDataHandler: () => {} },
+      onEvent: () => {},
+    };
+    const manager = new NocturneManager({
+      platform: "win32",
+      hostBridge: failingHostBridge,
+      bluetoothService: fakeBluetoothService,
+    });
 
     await manager.initializeOffline();
 
