@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { HostBridgeClient } from "./platform/host-bridge";
 import { NocturneManager } from "./nocturne-manager";
 import {
@@ -203,6 +203,7 @@ describe("NocturneManager system media routing", () => {
       platform: "win32",
       bluetoothService: fakeBluetoothService(),
       hostBridge,
+      systemMediaPreferenceStore: new MemoryBooleanPreference(true),
     });
     if (!manager.systemMediaService) throw new Error("expected system media service");
 
@@ -240,23 +241,286 @@ describe("NocturneManager system media routing", () => {
     await manager.systemMediaService.stop();
   });
 
-  test("forwards device media controls to the optional native host", async () => {
+  test("broadcasts native host media updates and artwork to connected Car Thing RPC clients with canonical payloads", async () => {
+    const hostBridge = new FakeMediaHostBridge();
+    const eventsSent: Array<{ topic: string; data: unknown }> = [];
+    const fakeRpcClient = {
+      call: () => Promise.resolve({ result: "ok" }),
+      sendEvent: (topic: string, data: unknown) => {
+        eventsSent.push({ topic, data });
+        return Promise.resolve();
+      },
+    } as any;
+
+    const manager = new NocturneManager({
+      platform: "win32",
+      bluetoothService: fakeBluetoothService(),
+      hostBridge,
+      systemMediaPreferenceStore: new MemoryBooleanPreference(true),
+    });
+    if (!manager.systemMediaService) throw new Error("expected system media service");
+
+    (manager as any).connections.set("fake-device", {
+      rpcClient: fakeRpcClient,
+      deviceInfo: null,
+    });
+
+    await manager.systemMediaService.start();
+
+    // Emit media update from native host
+    hostBridge.emit("media.now_playing.update", {
+      MediaItemAttributes: {
+        MediaItemTitle: "Synergy",
+        MediaItemArtist: "M83",
+        MediaItemAlbumName: "Fantasy",
+      },
+      PlaybackAttributes: {
+        PlaybackStatus: "playing",
+        PlaybackAppName: "Edge",
+        PlaybackElapsedTimeInMilliseconds: 30000,
+        PlaybackRate: 1,
+      },
+      mediaGeneration: 1,
+    });
+
+    // Emit artwork from native host
+    hostBridge.emit("media.now_playing.artwork", {
+      data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      content_type: "image/jpeg",
+      media_generation: 1,
+    });
+
+    await manager.systemMediaService.whenIdle();
+
+    expect(eventsSent).toEqual([
+      {
+        topic: "media.now_playing.update",
+        data: {
+          media_item_attributes: {
+            MediaItemTitle: "Synergy",
+            MediaItemArtist: "M83",
+            MediaItemAlbumName: "Fantasy",
+          },
+          playback_attributes: {
+            PlaybackStatus: "playing",
+            PlaybackAppName: "Edge",
+            PlaybackElapsedTimeInMilliseconds: 30000,
+            PlaybackRate: 1,
+          },
+          media_generation: 1,
+        },
+      },
+      {
+        topic: "media.now_playing.artwork",
+        data: {
+          data: "/9j/2Q==",
+          content_type: "image/jpeg",
+          media_generation: 1,
+        },
+      },
+    ]);
+
+    await manager.systemMediaService.stop();
+  });
+
+  test("maps device media control RPC calls to expected host-bridge actions", async () => {
     const hostBridge = new FakeMediaHostBridge();
     const manager = new NocturneManager({
       platform: "win32",
       bluetoothService: fakeBluetoothService(),
       hostBridge,
+      systemMediaPreferenceStore: new MemoryBooleanPreference(true),
     });
     if (!manager.systemMediaService) throw new Error("expected system media service");
     await manager.systemMediaService.start();
 
-    await expect(
-      manager.onCall("request", "media.control.previous", {}),
-    ).resolves.toEqual({ result: { status: "ok" } });
-    expect(hostBridge.calls.at(-1)).toEqual({
-      method: "media.control",
-      params: { action: "previous" },
+    const controls = [
+      ["media.control.play", "play"],
+      ["media.control.pause", "pause"],
+      ["media.control.next", "next"],
+      ["media.control.previous", "previous"],
+      ["media.control.toggle", "toggle"],
+      ["media.control.volumeUp", "volume_up"],
+      ["media.control.volumeDown", "volume_down"],
+    ] as const;
+
+    for (const [method, action] of controls) {
+      const res = await manager.onCall("request", method, {});
+      expect(res).toEqual({ result: { status: "ok" } });
+      expect(hostBridge.calls.at(-1)).toEqual({
+        method: "media.control",
+        params: { action },
+      });
+    }
+
+    await manager.systemMediaService.stop();
+  });
+
+  test("filters Spotify-linked playback while allowing skipped or unlinked Spotify system media", async () => {
+    const hostBridge = new FakeMediaHostBridge();
+    const eventsSent: Array<{ topic: string; data: unknown }> = [];
+    const fakeRpcClient = {
+      call: () => Promise.resolve({ result: "ok" }),
+      sendEvent: (topic: string, data: unknown) => {
+        eventsSent.push({ topic, data });
+        return Promise.resolve();
+      },
+    } as any;
+
+    const manager = new NocturneManager({
+      platform: "win32",
+      bluetoothService: fakeBluetoothService(),
+      hostBridge,
+      systemMediaPreferenceStore: new MemoryBooleanPreference(true),
     });
+    if (!manager.systemMediaService) throw new Error("expected system media service");
+    (manager as any).connections.set("fake-device", {
+      rpcClient: fakeRpcClient,
+      deviceInfo: null,
+    });
+
+    await manager.systemMediaService.start();
+
+    const spotifyUpdate = {
+      media_item_attributes: { MediaItemTitle: "Spotify Song", MediaItemArtist: "Artist" },
+      playback_attributes: { PlaybackStatus: "playing", PlaybackAppName: "Spotify" },
+      media_generation: 1,
+    };
+
+    // Case 1: Unlinked Spotify -> Delivered
+    hostBridge.emit("media.now_playing.update", spotifyUpdate);
+    await manager.systemMediaService.whenIdle();
+    expect(eventsSent).toHaveLength(1);
+    expect(eventsSent[0].topic).toBe("media.now_playing.update");
+
+    // Case 2: Linked Spotify -> Filtered / Suppressed
+    eventsSent.length = 0;
+    await manager.systemMediaService.setSpotifyLinked(true);
+    hostBridge.emit("media.now_playing.update", spotifyUpdate);
+    await manager.systemMediaService.whenIdle();
+    expect(eventsSent).toHaveLength(0);
+
+    // Case 3: Skipped Spotify (unlinked + skipped) -> Delivered
+    await manager.systemMediaService.setSpotifyLinked(false);
+    hostBridge.emit("media.now_playing.update", spotifyUpdate);
+    await manager.systemMediaService.whenIdle();
+    expect(eventsSent).toHaveLength(1);
+
+    await manager.systemMediaService.stop();
+  });
+
+  test("replays media metadata and artwork with rebased timeline progress on device reconnect", async () => {
+    const hostBridge = new FakeMediaHostBridge();
+    const eventsSent: Array<{ topic: string; data: unknown }> = [];
+    const fakeRpcClient = {
+      call: (method: string) => {
+        if (method === "ping") return Promise.resolve({ pong: "pong" });
+        if (method === "device.info") return Promise.resolve({ device: "Car Thing", version: "1.0" });
+        return Promise.resolve({ result: "ok" });
+      },
+      sendEvent: (topic: string, data: unknown) => {
+        eventsSent.push({ topic, data });
+        return Promise.resolve();
+      },
+    } as any;
+
+    const manager = new NocturneManager({
+      platform: "win32",
+      bluetoothService: fakeBluetoothService(),
+      hostBridge,
+      systemMediaPreferenceStore: new MemoryBooleanPreference(true),
+    });
+    const systemMedia = manager.systemMediaService;
+    if (!systemMedia) throw new Error("expected system media service");
+
+    await systemMedia.start();
+
+    let nowMs = 1_000_000;
+    const clock = spyOn(Date, "now").mockImplementation(() => nowMs);
+    try {
+      // Emit initial now playing update and artwork
+      hostBridge.emit("media.now_playing.update", {
+        media_item_attributes: {
+          MediaItemTitle: "Replay Test",
+          MediaItemArtist: "Artist",
+          MediaItemPlaybackDurationInMilliseconds: 300000,
+        },
+        playback_attributes: {
+          PlaybackStatus: "playing",
+          PlaybackElapsedTimeInMilliseconds: 10000,
+          PlaybackRate: 1,
+        },
+        media_generation: 5,
+      });
+      hostBridge.emit("media.now_playing.artwork", {
+        data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+        content_type: "image/jpeg",
+        media_generation: 5,
+      });
+      await systemMedia.whenIdle();
+      eventsSent.length = 0;
+
+      nowMs += 5000;
+
+      // Register connected device and trigger sendAppReady
+      (manager as any).connections.set("fake-device", {
+        rpcClient: fakeRpcClient,
+        deviceInfo: null,
+      });
+      await (manager as any).sendAppReady();
+    } finally {
+      clock.mockRestore();
+    }
+
+    // Verify reconnected client received rebased track progress and artwork
+    const replayedUpdate = eventsSent.find((e) => e.topic === "media.now_playing.update");
+    const replayedArtwork = eventsSent.find((e) => e.topic === "media.now_playing.artwork");
+
+    expect(replayedUpdate).toBeDefined();
+    expect(
+      (replayedUpdate?.data as any).playback_attributes.PlaybackElapsedTimeInMilliseconds,
+    ).toBe(15000);
+
+    expect(replayedArtwork).toBeDefined();
+    expect((replayedArtwork?.data as any).media_generation).toBe(5);
+
+    await systemMedia.stop();
+  });
+
+  test("handles media control gracefully when host indicates unsupported / no media session", async () => {
+    class NoSessionHostBridge extends FakeMediaHostBridge {
+      async call<TResult = unknown>(method: string, params: unknown = {}): Promise<TResult> {
+        this.calls.push({ method, params });
+        if (method === "media.control") {
+          const action = (params as any)?.action;
+          if (action === "volume_up" || action === "volume_down") {
+            return { status: "ok" } as TResult;
+          }
+          return { status: "unsupported" } as TResult;
+        }
+        return super.call(method, params);
+      }
+    }
+
+    const hostBridge = new NoSessionHostBridge();
+    const manager = new NocturneManager({
+      platform: "win32",
+      bluetoothService: fakeBluetoothService(),
+      hostBridge,
+      systemMediaPreferenceStore: new MemoryBooleanPreference(true),
+    });
+    if (!manager.systemMediaService) throw new Error("expected system media service");
+    await manager.systemMediaService.start();
+
+    // Transport controls return unsupported when no session is active
+    await expect(
+      manager.onCall("request", "media.control.play", {}),
+    ).resolves.toEqual({ result: { status: "unsupported" } });
+
+    // Master volume control still succeeds
+    await expect(
+      manager.onCall("request", "media.control.volumeUp", {}),
+    ).resolves.toEqual({ result: { status: "ok" } });
 
     await manager.systemMediaService.stop();
   });
