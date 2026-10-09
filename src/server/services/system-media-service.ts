@@ -199,8 +199,11 @@ export class SystemMediaService {
     const rec = asRecord(response);
     const status = (rec?.status as string) ?? "unsupported";
     if (status !== "ok") return { status };
-    const volume_percent = normalizeVolumePercent(rec?.volume_percent ?? rec?.volumePercent) ?? bounded;
-    const muted = typeof rec?.muted === "boolean" ? rec.muted : false;
+    const volume_percent = normalizeVolumePercent(rec?.volume_percent ?? rec?.volumePercent);
+    const muted = typeof rec?.muted === "boolean" ? rec.muted : undefined;
+    if (volume_percent === null || muted === undefined) {
+      return { status: "unsupported" };
+    }
     this.volumePercent = volume_percent;
     this.muted = muted;
     return { status: "ok", volume_percent, muted };
@@ -214,8 +217,11 @@ export class SystemMediaService {
     const rec = asRecord(response);
     const status = (rec?.status as string) ?? "unsupported";
     if (status !== "ok") return { status };
-    const volume_percent = normalizeVolumePercent(rec?.volume_percent ?? rec?.volumePercent) ?? (this.volumePercent ?? 50);
-    const muted = typeof rec?.muted === "boolean" ? rec.muted : (this.muted ?? false);
+    const volume_percent = normalizeVolumePercent(rec?.volume_percent ?? rec?.volumePercent);
+    const muted = typeof rec?.muted === "boolean" ? rec.muted : undefined;
+    if (volume_percent === null || muted === undefined) {
+      return { status: "unsupported" };
+    }
     this.volumePercent = volume_percent;
     this.muted = muted;
     return { status: "ok", volume_percent, muted };
@@ -233,8 +239,11 @@ export class SystemMediaService {
     const rec = asRecord(response);
     const status = (rec?.status as string) ?? "unsupported";
     if (status !== "ok") return { status };
-    const volume_percent = normalizeVolumePercent(rec?.volume_percent ?? rec?.volumePercent) ?? (this.volumePercent ?? 50);
-    const muted = typeof rec?.muted === "boolean" ? rec.muted : (this.muted ?? false);
+    const volume_percent = normalizeVolumePercent(rec?.volume_percent ?? rec?.volumePercent);
+    const muted = typeof rec?.muted === "boolean" ? rec.muted : undefined;
+    if (volume_percent === null || muted === undefined) {
+      return { status: "unsupported" };
+    }
     this.volumePercent = volume_percent;
     this.muted = muted;
     return { status: "ok", volume_percent, muted };

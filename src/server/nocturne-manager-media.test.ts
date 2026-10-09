@@ -43,6 +43,10 @@ class FakeMediaHostBridge implements HostBridgeClient {
     return () => listeners.delete(wrapped);
   }
 
+  emit(topic: string, data: unknown): void {
+    for (const listener of this.listeners.get(topic) ?? []) listener(data);
+  }
+
   close(): void {}
 }
 
@@ -181,6 +185,40 @@ describe("NocturneManager system media routing", () => {
       method: "volume.toggleMute",
       params: {},
     });
+
+    await manager.systemMediaService.stop();
+  });
+
+  test("forwards mute-only state changes with same volume percentage to NocturneManager sink", async () => {
+    const hostBridge = new FakeMediaHostBridge();
+    let sentVolumePct = 0;
+    let sentMuted: boolean | undefined = undefined;
+
+    const manager = new NocturneManager({
+      platform: "win32",
+      bluetoothService: fakeBluetoothService(),
+      hostBridge,
+    });
+    if (!manager.systemMediaService) throw new Error("expected system media service");
+
+    // Replace the sink delivery check
+    (manager as any).queueHostVolumeUpdate = (vol: number, muted?: boolean) => {
+      sentVolumePct = vol;
+      sentMuted = muted;
+      return Promise.resolve();
+    };
+
+    await manager.systemMediaService.start();
+
+    // Initial volume 50, false
+    hostBridge.emit("device.volume.update", { volume_percent: 50, muted: false });
+    expect(sentVolumePct).toBe(50);
+    expect(sentMuted).toBeFalse();
+
+    // Mute-only change: same volume 50, muted true
+    hostBridge.emit("device.volume.update", { volume_percent: 50, muted: true });
+    expect(sentVolumePct).toBe(50);
+    expect(sentMuted).toBeTrue();
 
     await manager.systemMediaService.stop();
   });

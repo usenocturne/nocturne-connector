@@ -185,11 +185,15 @@ describe("SystemMediaService", () => {
     await service.stop();
   });
 
-  test("handles endpoint failures without fabricating 50% or unmuted values", async () => {
+  test("handles endpoint failures and malformed ok responses without fabricating values or corrupting cache", async () => {
     class FailingVolumeHostBridge extends FakeHostBridge {
       async call<TResult = unknown>(method: string, params: unknown = {}): Promise<TResult> {
         this.calls.push({ method, params });
-        return { status: "unsupported" } as TResult;
+        if (method === "volume.get") {
+          return { volume_percent: 45, muted: false } as TResult;
+        }
+        // Return ok status but missing volume_percent / muted
+        return { status: "ok" } as TResult;
       }
     }
 
@@ -198,13 +202,17 @@ describe("SystemMediaService", () => {
     const service = new SystemMediaService(host, sink);
     await service.start();
 
-    expect(await service.getVolume()).toBeNull();
+    await service.getVolume(); // Cache is 45, false
+    expect(service.currentVolumePercent).toBe(45);
+    expect(service.currentMuted).toBeFalse();
+
+    // Malformed ok responses should return unsupported without overwriting 45, false
     expect(await service.setVolume(50)).toEqual({ status: "unsupported" });
     expect(await service.adjustVolume(10)).toEqual({ status: "unsupported" });
     expect(await service.toggleMute()).toEqual({ status: "unsupported" });
 
-    expect(service.currentVolumePercent).toBeNull();
-    expect(service.currentMuted).toBeNull();
+    expect(service.currentVolumePercent).toBe(45);
+    expect(service.currentMuted).toBeFalse();
 
     await service.stop();
   });
