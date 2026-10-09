@@ -69,7 +69,8 @@ Daemon translates into UI `phone.volume.update` event
 | --- | --- | --- |
 | `media.now_playing.update` | `{ media_item_attributes, playback_attributes, media_generation }` | Broadcasts current track metadata, duration, playback status, app name, and projected elapsed time |
 | `media.now_playing.artwork` | `{ data: string, content_type: "image/jpeg", media_generation: number }` | Base64 JPEG artwork scaled to max 300px |
-| `device.volume.update` | `{ volume_percent: number, muted: boolean }` | Master volume / mute state changes from native notifications or RPC actions |
+
+> **Note on Volume Communication**: Volume changes from the Windows audio endpoint are sent to the daemon as a `device.volume.update` RPC call (rather than a broadcast event topic), which the daemon then converts into a `phone.volume.update` event for the Car Thing UI.
 
 ## Payload Casing & Compatibility
 
@@ -88,5 +89,5 @@ When testing My-Turne integration with the Windows Connector:
 - [ ] **Desktop Media Players**: Play media in a native Windows player (e.g., Windows Media Player / Foobar2000 / VLC). Verify metadata, artwork, and playback controls (`media.control.*`).
 - [ ] **Spotify Desktop (Unlinked / Skipped)**: Verify Spotify desktop playback appears via GSMTC when Spotify account is skipped/unlinked in Connector.
 - [ ] **Spotify Desktop (Linked)**: Verify GSMTC suppresses Spotify system media events when Spotify account is linked.
-- [ ] **Volume Controls**: Trigger volume adjustment from Car Thing and Windows system tray. Confirm `device.volume.update` updates master volume on Windows.
+- [ ] **Volume Controls**: Trigger volume adjustment from Car Thing and Windows system tray. Confirm `device.volume.update` RPC call updates master volume on Windows and daemon.
 - [ ] **Cross-Repo Gap (`my-turne`)**: Ensure `my-turne` daemon routes media RPC calls to Windows when Windows Connector is selected over Phone HID.
