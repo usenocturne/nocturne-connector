@@ -92,6 +92,43 @@ class MemoryPreferenceStore implements SystemMediaPreferenceStore {
 }
 
 describe("SystemMediaService", () => {
+  for (const source of ["event", "get", "set", "adjust", "mute"] as const) {
+    test(`a newer unsupported ${source} invalidates a pending successful probe`, async () => {
+      let finishProbe!: (response: unknown) => void;
+      const pendingProbe = new Promise<unknown>((resolve) => { finishProbe = resolve; });
+      class UnsupportedVolumeBridge extends FakeHostBridge {
+        async call<TResult = unknown>(method: string, params: unknown = {}): Promise<TResult> {
+          if (method === "media.get_volume") return await pendingProbe as TResult;
+          if (method.startsWith("volume.")) return { status: "unsupported" } as TResult;
+          return super.call(method, params);
+        }
+      }
+      const host = new UnsupportedVolumeBridge();
+      const sink = new RecordingSink();
+      const service = new SystemMediaService(host, sink, new MemoryPreferenceStore(false));
+      const refresh = spyOn(service as any, "refreshVolume");
+      try {
+        await service.start();
+        if (source === "event") host.emit("device.volume.update", { status: "unsupported" });
+        else if (source === "get") expect(await service.getVolume()).toBeNull();
+        else if (source === "set") expect(await service.setVolume(50)).toEqual({ status: "unsupported" });
+        else if (source === "adjust") expect(await service.adjustVolume(5)).toEqual({ status: "unsupported" });
+        else expect(await service.toggleMute()).toEqual({ status: "unsupported" });
+        finishProbe({ volume_percent: 30, muted: false });
+        await refresh.mock.results[0]!.value;
+        await service.whenIdle();
+        expect(service.isVolumeSupported).toBeFalse();
+        expect(service.currentVolumePercent).toBeNull();
+        expect(service.currentMuted).toBeNull();
+        expect(sink.deliveries).toEqual([]);
+        await service.stop();
+      } finally {
+        finishProbe({ status: "unsupported" });
+        refresh.mockRestore();
+      }
+    });
+  }
+
   test("a late successful initial probe cannot overwrite a newer volume update", async () => {
     let finishProbe!: (response: unknown) => void;
     const pendingProbe = new Promise<unknown>((resolve) => { finishProbe = resolve; });

@@ -196,6 +196,7 @@ export class SystemMediaService {
     }
     const rec = asRecord(response);
     if (!rec || rec.status === "unsupported") {
+      if (rec?.status === "unsupported") this.volumeRevision++;
       this.volumeSupported = false;
       return null;
     }
@@ -221,6 +222,7 @@ export class SystemMediaService {
     const rec = asRecord(response);
     const status = (rec?.status as string) ?? "unsupported";
     if (status !== "ok") {
+      if (rec?.status === "unsupported") this.volumeRevision++;
       this.volumeSupported = false;
       return { status };
     }
@@ -245,6 +247,7 @@ export class SystemMediaService {
     const rec = asRecord(response);
     const status = (rec?.status as string) ?? "unsupported";
     if (status !== "ok") {
+      if (rec?.status === "unsupported") this.volumeRevision++;
       this.volumeSupported = false;
       return { status };
     }
@@ -273,6 +276,7 @@ export class SystemMediaService {
     const rec = asRecord(response);
     const status = (rec?.status as string) ?? "unsupported";
     if (status !== "ok") {
+      if (rec?.status === "unsupported") this.volumeRevision++;
       this.volumeSupported = false;
       return { status };
     }
@@ -489,6 +493,7 @@ export class SystemMediaService {
   private handleVolume(data: unknown): void {
     const rec = asRecord(data);
     if (rec?.status === "unsupported") {
+      this.volumeRevision++;
       this.volumeSupported = false;
       return;
     }
@@ -515,7 +520,7 @@ export class SystemMediaService {
       if (rec?.status === "unsupported") {
         return;
       }
-      // A newer successful event or RPC owns the cached state, even if unchanged.
+      // A newer definitive event or RPC owns the state, including unsupported.
       if (this.lifecycleStarted && this.volumeRevision === revision) {
         this.handleVolume(response);
       }
