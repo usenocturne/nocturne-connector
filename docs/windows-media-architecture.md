@@ -86,8 +86,8 @@ Car Thing Daemon translates into UI `phone.volume.update` event
 ## GSMTC Session Handling & Spotify Filtering Policy
 
 1. **GSMTC Active Session Monitoring**:
-   - The native host monitors `GlobalSystemMediaTransportControlsSessionManager.GetCurrentSession()`.
-   - Any playing audio application registered with Windows GSMTC (browser, desktop player, media service) streams metadata and artwork to the Connector.
+   - The native host queries `GlobalSystemMediaTransportControlsSessionManager.GetCurrentSession()` to monitor the single active system media session designated by Windows (rather than tracking every background media session simultaneously).
+   - Any playing audio application currently surfaced as the active session by Windows GSMTC (browser, desktop player, media service) streams metadata and artwork to the Connector.
 2. **Spotify Filtering Policy**:
    - **Spotify Linked**: When a Spotify account is linked in Nocturne/Connector, direct Spotify Web API + WebSocket integration handles Spotify playback. If `GetCurrentSession()` reports a Spotify source, GSMTC media events are suppressed to prevent duplicate metadata or state collisions.
    - **Spotify Skipped / Unlinked**: When Spotify is skipped or unlinked, GSMTC handles all system media sources, including Spotify desktop, web browsers, and local players. `SystemMediaService` remains forced active while Spotify is marked skipped (`spotify-skipped.json`).
@@ -101,10 +101,9 @@ Car Thing Daemon translates into UI `phone.volume.update` event
 ## `my-turne` Integration Requirement
 
 > **Cross-Repo Requirement (`my-turne`)**:
-> In the existing `my-turne` daemon/UI implementation, hardware media control buttons and UI control widgets are hardcoded to direct commands toward Phone HID / Spotify.
-> To direct media controls to the Windows Connector:
+> While Windows master volume RPCs (`volume.get`, `volume.set`, `volume.adjust`, `volume.toggleMute`, `media.control.volumeUp`, `media.control.volumeDown`) and transport control RPCs (`media.control.*`) are fully implemented in the Connector to target Windows `IAudioEndpointVolume` and GSMTC, directing Car Thing UI volume knob actions, physical media buttons, or UI widgets to those Connector RPCs requires `my-turne` routing changes:
 > 1. `my-turne` must select the Windows Connector as its active media controller when connected to Windows.
-> 2. `my-turne` daemon must forward UI media button presses as `media.control.*` or `volume.*` RPC calls to the Windows Connector.
+> 2. `my-turne` daemon must forward UI volume dial actions and media button presses as `volume.*` or `media.control.*` RPC calls to the Windows Connector.
 
 ## Hardware Validation Checklist
 
