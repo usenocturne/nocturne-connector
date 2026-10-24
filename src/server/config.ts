@@ -115,6 +115,7 @@ export const SpotifyOperationHash = {
   queryArtistOverview: "446130b4a0aa6522a686aafccddb0ae849165b5e0436fd802f96e0243617b5d8",
   fetchPlaylist: "bb67e0af06e8d6f52b531f97468ee4acd44cd0f82b988e15c2ea47b1148efc77",
   queryShowMetadataV2: "26d0c98fef216dad02d31c359075c07d605974af8d82834f26e90f917f32555a",
+  getEpisodeOrChapter: "5f77db47e5a2ce6680330bb61317aa09e17ddd1d189513cb218e7cd3e43288be",
   queryPodcastEpisodes: "8e2826c5993383566cc08bf9f5d3301b69513c3f6acb8d706286855e57bf44b2",
   libraryV3: "9f4da031f81274d572cfedaf6fc57a737c84b43d572952200b2c36aaa8fec1c6",
   fetchLibraryTracks: "087278b20b743578a6262c2b0b4bcd20d879c503cc359a2285baf083ef944240",

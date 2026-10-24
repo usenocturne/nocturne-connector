@@ -869,6 +869,84 @@ export class SpotifyService {
     };
   }
 
+  async fetchPlayableInfo(uri: string, contextUri?: string | null): Promise<SpotifyTrackInfo | null> {
+    if (uri.startsWith("spotify:track:")) return this.fetchTrackInfo(uri.slice("spotify:track:".length));
+    if (uri.startsWith("spotify:episode:")) {
+      return this.fetchEpisodeInfo(uri.slice("spotify:episode:".length), contextUri);
+    }
+    return null;
+  }
+
+  // The Car Thing UI reads an episode's show name from album_title and its artwork from image_url.
+  async fetchEpisodeInfo(episodeId: string, contextUri?: string | null): Promise<SpotifyTrackInfo | null> {
+    const info: SpotifyTrackInfo = {
+      uri: `spotify:episode:${episodeId}`,
+      id: episodeId,
+      title: null,
+      artistName: null,
+      artists: [],
+      albumTitle: null,
+      albumUri: null,
+      imageUrl: null,
+      durationMs: null,
+    };
+
+    try {
+      const episode = await this.fetchEpisodeInfoFromGraphQL(episodeId);
+      if (episode) Object.assign(info, episode);
+    } catch (error) { log.debug("Pathfinder episode enrichment failed; trying show metadata", error); }
+
+    const showUri = info.albumUri ?? (contextUri?.startsWith("spotify:show:") ? contextUri : null);
+    if (showUri && (!info.albumTitle || !info.imageUrl)) {
+      try {
+        const show = await this.handleGetShow({ content_id: showUri });
+        info.albumUri ??= showUri;
+        if (!info.albumTitle && show?.name) info.albumTitle = show.name;
+        if (!info.artistName && typeof show?.publisher === "string" && show.publisher) {
+          info.artistName = show.publisher;
+        }
+        if (!info.imageUrl && Array.isArray(show?.images)) {
+          const largest = show.images
+            .filter((img: any) => typeof img?.url === "string" && img.url)
+            .sort((a: any, b: any) => (b?.width ?? 0) - (a?.width ?? 0))[0];
+          if (largest) info.imageUrl = largest.url;
+        }
+      } catch (error) { log.debug("Pathfinder show enrichment failed; retaining playback metadata", error); }
+    }
+
+    return info.title || info.albumTitle || info.imageUrl ? info : null;
+  }
+
+  private async fetchEpisodeInfoFromGraphQL(episodeId: string): Promise<Partial<SpotifyTrackInfo> | null> {
+    const result = await this.performPathfinderRequest(
+      "getEpisodeOrChapter",
+      SpotifyOperationHash.getEpisodeOrChapter,
+      { uri: `spotify:episode:${episodeId}`, includeEpisodeContentRatingsV2: false }
+    );
+    const episode = result?.data?.episodeUnionV2;
+    if (!episode) return null;
+
+    const largestImageUrl = (coverArt: any): string | null => {
+      const sources = Array.isArray(coverArt?.sources) ? coverArt.sources : [];
+      const picked = sources
+        .filter((s: any) => typeof s?.url === "string" && s.url)
+        .sort((a: any, b: any) => (b?.width ?? 0) - (a?.width ?? 0))[0];
+      return picked?.url ?? null;
+    };
+
+    const show = episode.podcastV2?.data;
+    const durationMs = episode.duration?.totalMilliseconds;
+
+    return {
+      title: typeof episode.name === "string" && episode.name ? episode.name : null,
+      artistName: typeof show?.publisher?.name === "string" && show.publisher.name ? show.publisher.name : null,
+      albumTitle: typeof show?.name === "string" && show.name ? show.name : null,
+      albumUri: typeof show?.uri === "string" && show.uri.startsWith("spotify:show:") ? show.uri : null,
+      imageUrl: largestImageUrl(episode.coverArt) ?? largestImageUrl(show?.coverArt),
+      durationMs: typeof durationMs === "number" ? durationMs : null,
+    };
+  }
+
   mergeTrackInfoIntoPlayerState(playerState: any, info: SpotifyTrackInfo): void {
     if (!playerState) return;
 
@@ -1121,10 +1199,9 @@ export class SpotifyService {
     }
 
     const trackUri = state?.player_state?.track?.uri;
-    if (typeof trackUri === "string" && trackUri.startsWith("spotify:track:")) {
+    if (typeof trackUri === "string") {
       try {
-        const trackId = trackUri.slice("spotify:track:".length);
-        const info = await this.fetchTrackInfo(trackId);
+        const info = await this.fetchPlayableInfo(trackUri, state.player_state?.context_uri);
         if (info) {
           this.mergeTrackInfoIntoPlayerState(state.player_state, info);
         }

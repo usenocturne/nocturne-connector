@@ -85,6 +85,10 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
   readonly systemMediaService: SystemMediaService | null;
 
   private connections = new Map<string, DeviceConnection>();
+  // Cluster pushes are full snapshots enriched concurrently, so a slow
+  // enrichment (episodes) must not be broadcast after a newer snapshot.
+  private playerEventSequence = 0;
+  private lastBroadcastPlayerEventSequence = 0;
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   private keepAliveFailures = new Map<string, number>();
   private wsBroadcast: WSBroadcast | null = null;
@@ -1105,17 +1109,24 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
     const result = cleanupWebSocketMessage(event);
     if (!result) return;
 
+    const sequence = result.data?.payloads?.[0]?.cluster?.player_state ? ++this.playerEventSequence : null;
+    const broadcast = () => {
+      if (sequence !== null) {
+        if (sequence <= this.lastBroadcastPlayerEventSequence) {
+          log.debug(`Dropping superseded Spotify cluster snapshot ${sequence}`);
+          return;
+        }
+        this.lastBroadcastPlayerEventSequence = sequence;
+      }
+      this.updateActiveSpotifyDevice(result.data);
+      this.broadcastToDevices(result.topic, result.data);
+      this.broadcastToWebSocket(result.topic, result.data);
+    };
+
     this.enrichTrackMetadata(result.data)
-      .then(() => {
-        this.updateActiveSpotifyDevice(result.data);
-        this.broadcastToDevices(result.topic, result.data);
-        this.broadcastToWebSocket(result.topic, result.data);
-      })
-      .catch(() => {
-        this.updateActiveSpotifyDevice(result.data);
-        this.broadcastToDevices(result.topic, result.data);
-        this.broadcastToWebSocket(result.topic, result.data);
-      });
+      .catch((error) => log.debug("Spotify cluster enrichment failed", error))
+      .then(broadcast)
+      .catch((error) => log.warn("Failed to broadcast Spotify player event", error));
   }
 
   private updateActiveSpotifyDevice(data: any): void {
@@ -1135,9 +1146,8 @@ export class NocturneManager implements RPCClientDelegate, SpotifyWebSocketDeleg
     const uri: string = track.uri;
     let hasArtists = Array.isArray(track.metadata.artists) && track.metadata.artists.length > 0;
 
-    if (uri.startsWith("spotify:track:")) {
-      const trackId = uri.slice("spotify:track:".length);
-      const info = await this.spotifyService.fetchTrackInfo(trackId);
+    if (uri.startsWith("spotify:track:") || uri.startsWith("spotify:episode:")) {
+      const info = await this.spotifyService.fetchPlayableInfo(uri, playerState.context_uri);
       if (info) {
         this.spotifyService.mergeTrackInfoIntoPlayerState(playerState, info);
         hasArtists = Array.isArray(track.metadata.artists) && track.metadata.artists.length > 0;
