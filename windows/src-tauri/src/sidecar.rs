@@ -29,7 +29,14 @@ pub fn supervise(
         let mut restart_delay = Duration::from_secs(1);
         while !shutting_down.load(Ordering::Acquire) {
             ready.store(false, Ordering::Release);
-            match spawn_once(&bridge, &port, &ready, &child_slot) {
+            let result = spawn_once(&bridge, &port, &ready, &child_slot);
+            if !ready.load(Ordering::Acquire) {
+                // A pinned port another process took would fail every restart; let the next spawn pick a free one.
+                if let Ok(mut pinned) = port.lock() {
+                    *pinned = None;
+                }
+            }
+            match result {
                 Ok(status) => {
                     eprintln!("Nocturne Connector server exited with {status}");
                     restart_delay = Duration::from_secs(1);

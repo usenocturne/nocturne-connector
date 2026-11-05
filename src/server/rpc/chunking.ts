@@ -128,16 +128,28 @@ function isUUIDLike(value: string): boolean {
 }
 
 export class ChunkedMessageAssembler {
-  private pending = new Map<string, { total: number; chunks: Map<number, Buffer> }>();
+  private pending = new Map<
+    string,
+    { total: number; chunks: Map<number, Buffer>; lastChunkAt: number }
+  >();
 
-  addChunk(messageId: string, index: number, total: number, payload: Buffer): Buffer | null {
+  addChunk(
+    messageId: string,
+    index: number,
+    total: number,
+    payload: Buffer,
+    now = Date.now(),
+  ): Buffer | null {
     let msg = this.pending.get(messageId);
     if (!msg) {
-      msg = { total, chunks: new Map() };
+      msg = { total, chunks: new Map(), lastChunkAt: now };
       this.pending.set(messageId, msg);
+    } else if (msg.total !== total) {
+      return null;
     }
 
     msg.chunks.set(index, payload);
+    msg.lastChunkAt = now;
 
     if (msg.chunks.size === msg.total) {
       this.pending.delete(messageId);
@@ -155,6 +167,17 @@ export class ChunkedMessageAssembler {
 
   clear(): void {
     this.pending.clear();
+  }
+
+  evictIdleSince(cutoff: number): number {
+    let evicted = 0;
+    for (const [messageId, msg] of this.pending) {
+      if (msg.lastChunkAt < cutoff) {
+        this.pending.delete(messageId);
+        evicted += 1;
+      }
+    }
+    return evicted;
   }
 
   get pendingCount(): number {

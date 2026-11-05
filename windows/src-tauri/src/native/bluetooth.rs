@@ -58,11 +58,13 @@ struct Inner {
     client_socket: Option<SOCKET>,
     client_address: String,
     route_generation: u64,
+    client_generation: u64,
     monitor_started: bool,
     winrt_watchers: Vec<DeviceWatcher>,
     winrt_ids: HashMap<String, HashSet<String>>,
     removing_addresses: HashSet<String>,
     pairing_address: Option<String>,
+    pairing_cancel_reported: bool,
     pending_pairing: Option<PendingPairing>,
 }
 
@@ -87,11 +89,13 @@ impl WindowsBluetoothState {
                 client_socket: None,
                 client_address: String::new(),
                 route_generation: 0,
+                client_generation: 0,
                 monitor_started: false,
                 winrt_watchers: Vec::new(),
                 winrt_ids: HashMap::new(),
                 removing_addresses: HashSet::new(),
                 pairing_address: None,
+                pairing_cancel_reported: false,
                 pending_pairing: None,
             })),
         }
@@ -125,6 +129,7 @@ impl WindowsBluetoothState {
                 } else {
                     inner.route_generation + 1
                 };
+                inner.client_generation = next_generation(inner.client_generation);
                 let client_address = inner.client_address.clone();
                 let bridge = inner.bridge.clone();
                 inner.client_address.clear();
@@ -169,6 +174,17 @@ impl WindowsBluetoothState {
 
     fn is_route_generation(&self, generation: u64) -> bool {
         self.route_generation() == generation
+    }
+
+    fn client_generation(&self) -> u64 {
+        self.inner
+            .lock()
+            .map(|inner| inner.client_generation)
+            .unwrap_or(u64::MAX)
+    }
+
+    fn is_client_generation(&self, generation: u64) -> bool {
+        self.client_generation() == generation
     }
 
     pub async fn dispatch(
@@ -509,17 +525,23 @@ impl WindowsBluetoothState {
     }
 
     fn stop_discovery(&self) {
-        let watchers = self
+        let (bridge, watchers) = self
             .inner
             .lock()
             .map(|mut inner| {
                 inner.discovering = false;
                 inner.discovery_generation = next_generation(inner.discovery_generation);
-                std::mem::take(&mut inner.winrt_watchers)
+                (
+                    inner.bridge.clone(),
+                    std::mem::take(&mut inner.winrt_watchers),
+                )
             })
             .unwrap_or_default();
         for watcher in watchers {
             let _ = watcher.Stop();
+        }
+        if let Some(bridge) = bridge {
+            bridge.emit("bluetooth.adapter_status", self.status());
         }
     }
 
@@ -785,6 +807,7 @@ impl WindowsBluetoothState {
                 return Err(format!("Bluetooth unpairing is still active for {address}"));
             }
             inner.pairing_address = Some(address.clone());
+            inner.pairing_cancel_reported = false;
         }
         self.stop_discovery();
         log_native(&format!(
@@ -802,12 +825,19 @@ impl WindowsBluetoothState {
                     Err(error) => error.as_str(),
                 },
             ));
-            let pending = state.inner.lock().ok().and_then(|mut inner| {
-                if inner.pairing_address.as_deref() == Some(address.as_str()) {
-                    inner.pairing_address = None;
-                }
-                inner.pending_pairing.take()
-            });
+            let (pending, cancel_reported) = state
+                .inner
+                .lock()
+                .map(|mut inner| {
+                    if inner.pairing_address.as_deref() == Some(address.as_str()) {
+                        inner.pairing_address = None;
+                    }
+                    (
+                        inner.pending_pairing.take(),
+                        std::mem::take(&mut inner.pairing_cancel_reported),
+                    )
+                })
+                .unwrap_or((None, false));
             if let Some(pending) = pending {
                 let _ = pending.decision.send(false);
             }
@@ -817,10 +847,12 @@ impl WindowsBluetoothState {
                 }
                 Err(error) => {
                     log_native(&format!("Bluetooth pairing failed for {address}: {error}"));
-                    bridge.emit(
-                        "bluetooth.pairing_cancelled",
-                        json!({ "address": address, "error": error }),
-                    );
+                    if !cancel_reported {
+                        bridge.emit(
+                            "bluetooth.pairing_cancelled",
+                            json!({ "address": address, "error": error }),
+                        );
+                    }
                 }
             }
         }));
@@ -1004,6 +1036,9 @@ impl WindowsBluetoothState {
                         .is_some_and(|pending| pending.request_id == request_id)
                     {
                         inner.pending_pairing = None;
+                    }
+                    if !accepted {
+                        inner.pairing_cancel_reported = true;
                     }
                 }
                 let result = match accepted {
@@ -1257,7 +1292,7 @@ impl WindowsBluetoothState {
     fn connect_client(&self, address: &str, channel: u32) -> Result<(), String> {
         startup_winsock()?;
         self.disconnect_client();
-        let generation = self.route_generation();
+        let generation = self.client_generation();
         let address = address.to_string();
         let socket = connect_socket(&address, channel)?;
         let bridge = self
@@ -1271,7 +1306,7 @@ impl WindowsBluetoothState {
                 .inner
                 .lock()
                 .map_err(|_| "Bluetooth state is poisoned".to_string())?;
-            if inner.route_generation != generation {
+            if inner.client_generation != generation {
                 false
             } else {
                 inner.client_socket = Some(socket);
@@ -1350,7 +1385,7 @@ impl WindowsBluetoothState {
             .map(|inner| {
                 (
                     inner.client_socket,
-                    inner.route_generation,
+                    inner.client_generation,
                     inner.client_address.clone(),
                     inner.bridge.clone(),
                 )
@@ -1365,7 +1400,8 @@ impl WindowsBluetoothState {
                 .inner
                 .lock()
                 .map(|mut inner| {
-                    if inner.client_socket == Some(socket) && inner.route_generation == generation {
+                    if inner.client_socket == Some(socket) && inner.client_generation == generation
+                    {
                         inner.client_socket = None;
                         inner.client_address.clear();
                         true
@@ -1386,7 +1422,7 @@ impl WindowsBluetoothState {
             .inner
             .lock()
             .map(|inner| {
-                inner.client_socket == Some(socket) && inner.route_generation == generation
+                inner.client_socket == Some(socket) && inner.client_generation == generation
             })
             .map_err(|_| "Bluetooth state is poisoned".to_string())?;
         if !still_current {
@@ -1397,11 +1433,7 @@ impl WindowsBluetoothState {
 
     fn disconnect_client(&self) {
         let socket = self.inner.lock().ok().and_then(|mut inner| {
-            inner.route_generation = if inner.route_generation == u64::MAX {
-                0
-            } else {
-                inner.route_generation + 1
-            };
+            inner.client_generation = next_generation(inner.client_generation);
             inner.client_address.clear();
             inner.client_socket.take()
         });
@@ -1488,18 +1520,22 @@ fn accept_loop(
     probe: bool,
     initial_listener: Option<(SOCKET, u32)>,
 ) {
+    let mut last_bind_error = None;
     let (mut listener, mut bound_channel) = initial_listener.unwrap_or_else(|| loop {
         match bind_server(channel) {
             Ok(listener) => break listener,
             Err(error) => {
-                eprintln!("RFCOMM channel {channel} is unavailable: {error}");
-                log_native(&format!(
-                    "RFCOMM listener bind retry requested_channel={channel} probe={probe}: {error}"
-                ));
+                if is_new_bind_error(&mut last_bind_error, &error) {
+                    eprintln!("RFCOMM channel {channel} is unavailable: {error}");
+                    log_native(&format!(
+                        "RFCOMM listener bind retry requested_channel={channel} probe={probe}: {error}"
+                    ));
+                }
                 thread::sleep(Duration::from_secs(2));
             }
         }
     });
+    last_bind_error = None;
     if !probe {
         if let Err(error) = register_service(bound_channel) {
             eprintln!("RFCOMM service advertisement unavailable: {error}");
@@ -1529,14 +1565,17 @@ fn accept_loop(
                     match bind_server(channel) {
                         Ok(listener) => break listener,
                         Err(error) => {
-                            eprintln!("RFCOMM channel {channel} is unavailable: {error}");
-                            log_native(&format!(
-                                "RFCOMM listener rebind retry requested_channel={channel} probe={probe}: {error}"
-                            ));
+                            if is_new_bind_error(&mut last_bind_error, &error) {
+                                eprintln!("RFCOMM channel {channel} is unavailable: {error}");
+                                log_native(&format!(
+                                    "RFCOMM listener rebind retry requested_channel={channel} probe={probe}: {error}"
+                                ));
+                            }
                             thread::sleep(Duration::from_secs(2));
                         }
                     }
                 };
+                last_bind_error = None;
                 if !probe {
                     if let Err(error) = register_service(bound_channel) {
                         eprintln!("RFCOMM service advertisement unavailable: {error}");
@@ -1628,17 +1667,14 @@ fn server_read_loop(
             );
         }
     }
-    let should_emit = if state.is_route_generation(generation) {
-        state
-            .inner
-            .lock()
-            .map(|mut inner| inner.server_connections.remove(&connection_id).is_some())
-            .unwrap_or(false)
-    } else {
-        false
-    };
-    close_socket(socket);
-    if should_emit {
+    // Whoever removes the socket from state owns closing it; Windows reuses SOCKET values.
+    let removed = state
+        .inner
+        .lock()
+        .map(|mut inner| inner.server_connections.remove(&connection_id).is_some())
+        .unwrap_or(false);
+    if removed {
+        close_socket(socket);
         bridge.emit(
             "rfcomm.server.disconnected",
             json!({ "connectionId": connection_id, "address": address }),
@@ -1659,7 +1695,7 @@ fn client_read_loop(
         if read <= 0 {
             break;
         }
-        if state.is_route_generation(generation) {
+        if state.is_client_generation(generation) {
             if let Some(bridge) = &bridge {
                 bridge.emit(
                     "rfcomm.client.data",
@@ -1672,20 +1708,30 @@ fn client_read_loop(
         .inner
         .lock()
         .map(|mut inner| {
-            if inner.route_generation == generation && inner.client_socket == Some(socket) {
+            if inner.client_generation == generation && inner.client_socket == Some(socket) {
                 inner.client_socket = None;
+                inner.client_address.clear();
                 true
             } else {
                 false
             }
         })
         .unwrap_or(false);
-    close_socket(socket);
     if should_emit {
+        close_socket(socket);
         if let Some(bridge) = bridge {
             bridge.emit("rfcomm.client.disconnected", json!({ "address": address }));
         }
     }
+}
+
+// Repeated bind failures (Windows often reserves channel 3) are logged once per distinct error.
+fn is_new_bind_error(last: &mut Option<String>, error: &str) -> bool {
+    if last.as_deref() == Some(error) {
+        return false;
+    }
+    *last = Some(error.to_string());
+    true
 }
 
 fn close_socket(socket: SOCKET) {
@@ -2180,9 +2226,9 @@ fn bytes_param(params: &Value, key: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        merge_device, next_generation, pairing_status_error, pairing_status_name,
-        passive_device_search_params, supported_pairing_kinds, unpair_status_is_success,
-        valid_pairing_pin,
+        is_new_bind_error, merge_device, next_generation, pairing_status_error,
+        pairing_status_name, passive_device_search_params, supported_pairing_kinds,
+        unpair_status_is_success, valid_pairing_pin,
     };
     use serde_json::json;
     use windows::Devices::Enumeration::{
@@ -2224,6 +2270,16 @@ mod tests {
         assert!(search.fReturnAuthenticated.as_bool());
         assert!(search.fReturnRemembered.as_bool());
         assert!(search.fReturnConnected.as_bool());
+    }
+
+    #[test]
+    fn repeated_bind_failures_are_logged_once_per_distinct_error() {
+        let mut last = None;
+        assert!(is_new_bind_error(&mut last, "channel reserved"));
+        assert!(!is_new_bind_error(&mut last, "channel reserved"));
+        assert!(is_new_bind_error(&mut last, "adapter off"));
+        assert!(!is_new_bind_error(&mut last, "adapter off"));
+        assert!(is_new_bind_error(&mut last, "channel reserved"));
     }
 
     #[test]

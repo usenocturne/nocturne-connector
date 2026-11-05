@@ -35,6 +35,7 @@ export interface BluetoothAdapterLike {
     address: string;
   }>;
   setOnPairComplete(handler: (address: string) => void): void;
+  setOnPairFailed?(handler: (address: string, error: string) => void): void;
   setOnDeviceConnected(handler: (address: string) => void): void;
   setOnDeviceFound(handler: (device: BluetoothDevice) => void): void;
   setOnDeviceUpdated(handler: (device: BluetoothDevice) => void): void;
@@ -220,6 +221,10 @@ export class BluetoothService {
         }
         log.info(`Pairing complete for ${address}, will auto-connect RFCOMM in 3s`);
         this.scheduleAutoConnect(address, 3_000);
+      });
+
+      this.adapter.setOnPairFailed?.((address, error) => {
+        this.emit("pairingCancelled", { error: `Pairing with ${address} failed: ${error}` });
       });
 
       this.adapter.setOnDeviceConnected((address) => {

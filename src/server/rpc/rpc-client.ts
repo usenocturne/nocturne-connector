@@ -412,10 +412,8 @@ export class RPCClient {
     for (const [messageId, retained] of this.sentChunks) {
       if (retained.sentAt < cutoff) this.sentChunks.delete(messageId);
     }
-    if (this.assembler.pendingCount > 5) {
-      this.assembler.clear();
-      log.warn("Cleared stale pending chunks");
-    }
+    const evicted = this.assembler.evictIdleSince(cutoff);
+    if (evicted > 0) log.warn(`Cleared ${evicted} stale pending chunked message(s)`);
   }
 
   cleanup(): void {

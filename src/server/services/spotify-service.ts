@@ -1044,9 +1044,10 @@ export class SpotifyService {
     const fromId = `hobs_${crypto.randomUUID().replace(/-/g, "").substring(0, 40)}`;
 
     const metadata: any = { track_player: "audio" };
-    if (params?.context_uri) {
-      metadata.context_uri = params.context_uri;
-      metadata.entity_uri = params.context_uri;
+    const contextUri = params?.context_uri ?? params?.contextUri;
+    if (contextUri) {
+      metadata.context_uri = contextUri;
+      metadata.entity_uri = contextUri;
     }
 
     const res = await fetch(
@@ -1072,7 +1073,7 @@ export class SpotifyService {
     if (!deviceId) throw new Error("No active device");
     const command = { endpoint: "seek_to", value: params.position_ms ?? params.positionMs ?? 0 };
 
-    await fetch(
+    const res = await fetch(
       `https://${spclient}/connect-state/v1/player/command/from/${deviceId}/to/${deviceId}`,
       {
         method: "POST",
@@ -1080,7 +1081,7 @@ export class SpotifyService {
         body: JSON.stringify({ command }),
       }
     );
-    return { success: true };
+    return { success: res.ok || res.status === 204 };
   }
 
   async handleVolume(params: any): Promise<any> {
@@ -1090,7 +1091,7 @@ export class SpotifyService {
     if (!deviceId) throw new Error("No active device");
     const volume = Math.round(((params.volume_percent ?? params.volumePercent ?? 50) / 100) * 65535);
 
-    await fetch(
+    const res = await fetch(
       `https://${spclient}/connect-state/v1/connect/volume/from/${deviceId}/to/${deviceId}`,
       {
         method: "PUT",
@@ -1098,7 +1099,7 @@ export class SpotifyService {
         body: JSON.stringify({ volume }),
       }
     );
-    return { success: true };
+    return { success: res.ok || res.status === 204 };
   }
 
   async handleShuffle(params: any): Promise<any> {
@@ -1108,7 +1109,7 @@ export class SpotifyService {
     if (!deviceId) throw new Error("No active device");
     const command = { endpoint: "set_shuffling_context", value: params.state ?? false };
 
-    await fetch(
+    const res = await fetch(
       `https://${spclient}/connect-state/v1/player/command/from/${deviceId}/to/${deviceId}`,
       {
         method: "POST",
@@ -1116,7 +1117,7 @@ export class SpotifyService {
         body: JSON.stringify({ command }),
       }
     );
-    return { success: true };
+    return { success: res.ok || res.status === 204 };
   }
 
   async handleRepeat(params: any): Promise<any> {
@@ -1127,8 +1128,8 @@ export class SpotifyService {
     const fromId = `hobs_${crypto.randomUUID().replace(/-/g, "").substring(0, 40)}`;
     const mode = params.state ?? params.mode ?? "off";
 
-    const sendCommand = async (endpoint: string, value: boolean) => {
-      await fetch(
+    const sendCommand = async (endpoint: string, value: boolean): Promise<boolean> => {
+      const res = await fetch(
         `https://${spclient}/connect-state/v1/player/command/from/${fromId}/to/${deviceId}`,
         {
           method: "POST",
@@ -1136,18 +1137,21 @@ export class SpotifyService {
           body: JSON.stringify({ command: { endpoint, value } }),
         }
       );
+      return res.ok || res.status === 204;
     };
 
+    let success: boolean;
     if (mode === "track") {
-      await sendCommand("set_repeating_track", true);
+      success = await sendCommand("set_repeating_track", true);
     } else if (mode === "context") {
-      await sendCommand("set_repeating_context", true);
+      success = await sendCommand("set_repeating_context", true);
     } else {
-      await sendCommand("set_repeating_track", false);
-      await sendCommand("set_repeating_context", false);
+      const trackOff = await sendCommand("set_repeating_track", false);
+      const contextOff = await sendCommand("set_repeating_context", false);
+      success = trackOff && contextOff;
     }
 
-    return { success: true };
+    return { success };
   }
 
   private async _simpleSpClientCommand(endpoint: string): Promise<any> {
@@ -2325,9 +2329,10 @@ export class SpotifyService {
   async handleSetPlaybackSpeed(params: any): Promise<any> {
     const accessToken = await this.getValidAccessToken();
     const spclient = this.spclientEndpoint || "gue1-spclient.spotify.com";
-    const deviceId = params.device_id || params.deviceId || "unknown";
+    const deviceId = params.device_id || params.deviceId || this._activeDeviceId;
+    if (!deviceId) throw new Error("No active device");
 
-    await fetch(
+    const res = await fetch(
       `https://${spclient}/connect-state/v1/player/command/from/${deviceId}/to/${deviceId}`,
       {
         method: "POST",
@@ -2335,15 +2340,16 @@ export class SpotifyService {
         body: JSON.stringify({ command: { playback_speed: params.speed, endpoint: "set_options" } }),
       }
     );
-    return { success: true, speed: params.speed };
+    return { success: res.ok || res.status === 204, speed: params.speed };
   }
 
   async handleDjStart(params: any): Promise<any> {
     const accessToken = await this.getValidAccessToken();
     const spclient = this.spclientEndpoint || "gue1-spclient.spotify.com";
-    const deviceId = params.device_id || params.deviceId || "unknown";
+    const deviceId = params.device_id || params.deviceId || this._activeDeviceId;
+    if (!deviceId) throw new Error("No active device");
 
-    await fetch(
+    const res = await fetch(
       `https://${spclient}/connect-state/v1/player/command/from/${deviceId}/to/${deviceId}`,
       {
         method: "POST",
@@ -2360,15 +2366,16 @@ export class SpotifyService {
         }),
       }
     );
-    return { success: true };
+    return { success: res.ok || res.status === 204 };
   }
 
   async handleDjSignal(params: any): Promise<any> {
     const accessToken = await this.getValidAccessToken();
     const spclient = this.spclientEndpoint || "gue1-spclient.spotify.com";
-    const deviceId = params.device_id || params.deviceId || "unknown";
+    const deviceId = params.device_id || params.deviceId || this._activeDeviceId;
+    if (!deviceId) throw new Error("No active device");
 
-    await fetch(
+    const res = await fetch(
       `https://${spclient}/connect-state/v1/player/command/from/${deviceId}/to/${deviceId}`,
       {
         method: "POST",
@@ -2376,7 +2383,7 @@ export class SpotifyService {
         body: JSON.stringify({ command: { endpoint: "signal", signal_id: "jump" } }),
       }
     );
-    return { success: true };
+    return { success: res.ok || res.status === 204 };
   }
 
   async handleFetchImage(params: any): Promise<any> {

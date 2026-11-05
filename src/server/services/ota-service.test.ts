@@ -112,3 +112,34 @@ test("accepts HTTP-compressed packages after Bun decompresses the transfer body"
     fixtureServer.stop(true);
   }
 });
+
+describe("OTAService connector update start", () => {
+  test("rejects a second start while the first is still checking for the update", async () => {
+    const service = new OTAService({ platform: "linux", connectorSelfUpdatesEnabled: true });
+    const pendingChecks: Array<() => void> = [];
+    service.checkConnectorUpdate = () =>
+      new Promise((resolve) => {
+        pendingChecks.push(() =>
+          resolve({
+            updateAvailable: false,
+            channel: "stable",
+            message: "No connector update available",
+          } as Awaited<ReturnType<OTAService["checkConnectorUpdate"]>>),
+        );
+      });
+
+    const first = service.startConnectorUpdate();
+    const second = service.startConnectorUpdate();
+    const secondResult = second.catch((error: Error) => error.message);
+    for (const finish of pendingChecks) finish();
+
+    expect(await secondResult).toBe("Connector update already in progress");
+    expect(pendingChecks).toHaveLength(1);
+    await expect(first).rejects.toThrow("No connector update available");
+    service.checkConnectorUpdate = async () =>
+      ({ updateAvailable: false, channel: "stable", message: "none" }) as Awaited<
+        ReturnType<OTAService["checkConnectorUpdate"]>
+      >;
+    await expect(service.startConnectorUpdate()).rejects.toThrow("none");
+  });
+});

@@ -67,24 +67,11 @@ export class RFCOMMServer {
         }
 
         NewConnection(device: string, fd: number, _fdProps: any) {
-          log.info(`New RFCOMM connection from ${device}, fd=${fd}`);
-          const address = device.split("/").pop()?.replace(/_/g, ":") ?? "";
-          const conn: RFCOMMConnection = { devicePath: device, address, fd, stream: null };
-          server.connections.set(device, conn);
-          server.writeStates.set(device, {
-            connection: conn,
-            fd,
-            tail: Promise.resolve(),
-          });
-          server.setupFdReading(conn);
-          server.onConnection?.(conn);
+          server.handleNewConnection(device, fd);
         }
 
         RequestDisconnection(device: string) {
-          log.info(`RFCOMM disconnection requested: ${device}`);
-          server.connections.delete(device);
-          server.writeStates.delete(device);
-          server.onDisconnection?.(device);
+          server.handleRequestDisconnection(device);
         }
 
         Release() {
@@ -110,10 +97,47 @@ export class RFCOMMServer {
     }
   }
 
+  handleNewConnection(device: string, fd: number): void {
+    log.info(`New RFCOMM connection from ${device}, fd=${fd}`);
+    const replaced = this.connections.get(device);
+    const address = device.split("/").pop()?.replace(/_/g, ":") ?? "";
+    const conn: RFCOMMConnection = { devicePath: device, address, fd, stream: null };
+    this.connections.set(device, conn);
+    this.writeStates.set(device, {
+      connection: conn,
+      fd,
+      tail: Promise.resolve(),
+    });
+    if (replaced && replaced.fd !== fd) this.closeConnectionFd(replaced);
+    this.setupFdReading(conn);
+    this.onConnection?.(conn);
+  }
+
+  handleRequestDisconnection(device: string): void {
+    log.info(`RFCOMM disconnection requested: ${device}`);
+    const connection = this.connections.get(device);
+    this.connections.delete(device);
+    this.writeStates.delete(device);
+    if (connection) this.closeConnectionFd(connection);
+    this.onDisconnection?.(device);
+  }
+
+  private closeConnectionFd(connection: RFCOMMConnection): void {
+    connection.stream?.cancel?.().catch((error: unknown) => {
+      log.warn(`Failed to cancel RFCOMM reader ${connection.devicePath}: ${error}`);
+    });
+    try {
+      closeSync(connection.fd);
+    } catch (error) {
+      log.warn(`Failed to close RFCOMM connection ${connection.devicePath}: ${error}`);
+    }
+  }
+
   private setupFdReading(connection: RFCOMMConnection): void {
     const { devicePath, fd } = connection;
     const readable = Bun.file(fd);
     const reader = readable.stream().getReader();
+    connection.stream = reader;
 
     const readLoop = async () => {
       try {
@@ -130,6 +154,7 @@ export class RFCOMMServer {
       if (this.connections.get(devicePath) === connection) {
         this.connections.delete(devicePath);
         this.writeStates.delete(devicePath);
+        this.closeConnectionFd(connection);
         this.onDisconnection?.(devicePath);
       }
     };
@@ -173,11 +198,7 @@ export class RFCOMMServer {
     for (const [devicePath, connection] of matches) {
       this.connections.delete(devicePath);
       this.writeStates.delete(devicePath);
-      try {
-        closeSync(connection.fd);
-      } catch (error) {
-        log.warn(`Failed to close RFCOMM connection ${devicePath}: ${error}`);
-      }
+      this.closeConnectionFd(connection);
       this.onDisconnection?.(devicePath);
     }
     return matches.length > 0;

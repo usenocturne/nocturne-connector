@@ -30,7 +30,7 @@ import_config() {
   local dst="/data/etc/wpa_supplicant/wpa_supplicant.conf"
 
   mkdir -p /data/etc/wpa_supplicant /etc/wpa_supplicant
-  cp "$src" "$dst"
+  cp "$src" "$dst" || return 1
   grep -q "ctrl_interface" "$dst" || \
     sed -i '1i ctrl_interface=/run/wpa_supplicant' "$dst"
   grep -q "update_config" "$dst" || \
@@ -47,11 +47,16 @@ start() {
   if [ -n "$src" ]; then
     einfo "Found $(basename "$src") on boot partition, importing..."
 
-    import_config "$src"
+    if ! import_config "$src"; then
+      eerror "Failed to import $(basename "$src"); leaving it on the boot partition"
+      eend 1
+      return 1
+    fi
 
-    mount -o remount,rw /uboot 2>/dev/null
+    boot_mount=$(dirname "$src")
+    mount -o remount,rw "$boot_mount" 2>/dev/null
     rm -f "$src"
-    mount -o remount,ro /uboot 2>/dev/null
+    mount -o remount,ro "$boot_mount" 2>/dev/null
 
     einfo "WiFi config imported and removed from boot partition"
   fi

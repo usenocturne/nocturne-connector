@@ -133,8 +133,18 @@ impl BridgeServer {
         let pipe_name = std::env::var("NOCTURNE_HOST_PIPE")
             .map_err(|_| BridgeError::InvalidFrame("NOCTURNE_HOST_PIPE is missing".to_string()))?;
         loop {
-            let server = create_user_pipe(&pipe_name).map_err(BridgeError::Io)?;
-            server.connect().await.map_err(BridgeError::Io)?;
+            let server = match create_user_pipe(&pipe_name) {
+                Ok(server) => server,
+                Err(error) => {
+                    log_bridge(&format!("Named-pipe creation failed, retrying: {error}"));
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    continue;
+                }
+            };
+            if let Err(error) = server.connect().await {
+                log_bridge(&format!("Named-pipe client connect failed: {error}"));
+                continue;
+            }
             let connection_id = self.next_connection_id.fetch_add(1, Ordering::Relaxed);
             let _ = self.active_connection.send(connection_id);
             log_bridge(&format!("Named-pipe client connected id={connection_id}"));
@@ -165,6 +175,7 @@ impl BridgeServer {
         W: AsyncWrite + Unpin,
     {
         let mut events = self.subscribe();
+        let mut frames = FrameReader::default();
         let mut authenticated = false;
         let mut generation = 0;
         let (responses, mut pending_responses) = mpsc::unbounded_channel();
@@ -177,7 +188,7 @@ impl BridgeServer {
                         break;
                     }
                 }
-                frame = read_frame(&mut reader) => {
+                frame = frames.next_frame(&mut reader) => {
                     let frame = match frame {
                         Ok(frame) => frame,
                         Err(BridgeError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof => break,
@@ -261,7 +272,15 @@ impl BridgeServer {
                                 return Err(error);
                             }
                         }
-                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            log_bridge(&format!(
+                                "Bridge event stream lagged; dropped {skipped} events, resetting connection id={connection_id}"
+                            ));
+                            self.native.reset_routes();
+                            return Err(BridgeError::InvalidFrame(format!(
+                                "event stream lagged by {skipped} events"
+                            )));
+                        }
                         Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
@@ -386,6 +405,54 @@ fn create_user_pipe(
     result
 }
 
+/// Reassembles frames across `select!` cancellations: only the cancel-safe `read` is awaited,
+/// and bytes it returns stay buffered here until a whole frame is available.
+#[derive(Default)]
+struct FrameReader {
+    buffer: Vec<u8>,
+    chunk: Vec<u8>,
+}
+
+impl FrameReader {
+    async fn next_frame<R: AsyncRead + Unpin>(
+        &mut self,
+        reader: &mut R,
+    ) -> Result<Vec<u8>, BridgeError> {
+        loop {
+            if let Some(frame) = self.take_frame()? {
+                return Ok(frame);
+            }
+            if self.chunk.is_empty() {
+                self.chunk = vec![0u8; 64 * 1024];
+            }
+            let read = reader.read(&mut self.chunk).await?;
+            if read == 0 {
+                return Err(BridgeError::Io(io::ErrorKind::UnexpectedEof.into()));
+            }
+            self.buffer.extend_from_slice(&self.chunk[..read]);
+        }
+    }
+
+    fn take_frame(&mut self) -> Result<Option<Vec<u8>>, BridgeError> {
+        let Some(header) = self.buffer.first_chunk::<4>() else {
+            return Ok(None);
+        };
+        let length = u32::from_le_bytes(*header) as usize;
+        if length == 0 || length > MAX_FRAME_BYTES {
+            return Err(BridgeError::InvalidFrame(format!(
+                "invalid frame length {length}"
+            )));
+        }
+        if self.buffer.len() < 4 + length {
+            return Ok(None);
+        }
+        let frame = self.buffer[4..4 + length].to_vec();
+        self.buffer.drain(..4 + length);
+        Ok(Some(frame))
+    }
+}
+
+#[cfg(test)]
 async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>, BridgeError> {
     let length = reader.read_u32_le().await? as usize;
     if length == 0 || length > MAX_FRAME_BYTES {
@@ -470,6 +537,71 @@ mod tests {
             stale.error.as_ref().map(|error| error.code.as_str()),
             Some("stale_generation")
         );
+    }
+
+    fn encode_frame<T: Serialize>(value: &T) -> Vec<u8> {
+        let payload = to_vec_named(value).expect("frame serialization failed");
+        let mut frame = (payload.len() as u32).to_le_bytes().to_vec();
+        frame.extend_from_slice(&payload);
+        frame
+    }
+
+    fn ping(id: u64) -> BridgeRequest {
+        BridgeRequest {
+            r#type: "request".to_string(),
+            id,
+            token: "secret".to_string(),
+            generation: 1,
+            method: "ping".to_string(),
+            params: Value::Object(Default::default()),
+        }
+    }
+
+    async fn read_response<R: AsyncRead + Unpin>(reader: &mut R, id: u64) -> Value {
+        loop {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(2), read_frame(reader))
+                .await
+                .expect("timed out waiting for a bridge frame")
+                .expect("bridge connection closed");
+            let value: Value = from_slice(&frame).expect("bridge frame did not decode");
+            if value["type"] == "response" && value["id"] == id {
+                return value;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn keeps_partial_request_frames_when_events_are_written_mid_read() {
+        let bridge = BridgeServer::new("secret".to_string());
+        let _ = bridge.active_connection.send(7);
+        let active = bridge.active_connection.subscribe();
+        let (client, server) = tokio::io::duplex(1 << 20);
+        let (server_reader, server_writer) = tokio::io::split(server);
+        let serving = bridge.clone();
+        tokio::spawn(async move {
+            let _ = serving
+                .serve_connection(server_reader, server_writer, 7, active)
+                .await;
+        });
+        let (mut client_reader, mut client_writer) = tokio::io::split(client);
+
+        client_writer
+            .write_all(&encode_frame(&ping(1)))
+            .await
+            .unwrap();
+        read_response(&mut client_reader, 1).await;
+
+        let second = encode_frame(&ping(2));
+        client_writer.write_all(&second[..6]).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        for index in 0..3 {
+            bridge.emit("test.event", serde_json::json!({ "index": index }));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        client_writer.write_all(&second[6..]).await.unwrap();
+
+        let response = read_response(&mut client_reader, 2).await;
+        assert_eq!(response["generation"], 1);
     }
 
     #[test]

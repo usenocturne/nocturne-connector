@@ -273,6 +273,7 @@ export class BlueZAdapter {
 
   private onDeviceConnected: ((address: string) => void) | null = null;
   private onPairComplete: ((address: string) => void) | null = null;
+  private onPairFailed: ((address: string, error: string) => void) | null = null;
   private onDeviceFound: ((device: BluetoothDevice) => void) | null = null;
   private onDeviceUpdated: ((device: BluetoothDevice) => void) | null = null;
   private watchedPaths = new Set<string>();
@@ -283,6 +284,10 @@ export class BlueZAdapter {
 
   setOnPairComplete(handler: (address: string) => void): void {
     this.onPairComplete = handler;
+  }
+
+  setOnPairFailed(handler: (address: string, error: string) => void): void {
+    this.onPairFailed = handler;
   }
 
   setOnDeviceFound(handler: (device: BluetoothDevice) => void): void {
@@ -304,6 +309,7 @@ export class BlueZAdapter {
       this.onPairComplete?.(address);
     }).catch((err: any) => {
       log.error(`Pairing failed for ${address}: ${err}`);
+      this.onPairFailed?.(address, err instanceof Error ? err.message : String(err));
     });
   }
 

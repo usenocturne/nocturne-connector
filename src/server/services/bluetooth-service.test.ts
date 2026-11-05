@@ -144,6 +144,7 @@ class FakeAdapter implements BluetoothAdapterLike {
   startDiscoveryCalls = 0;
   stopDiscoveryCalls = 0;
   private deviceConnectedHandler: ((address: string) => void) | null = null;
+  private pairFailedHandler: ((address: string, error: string) => void) | null = null;
 
   async initialize(): Promise<void> {}
   async powerOn(): Promise<void> {}
@@ -176,8 +177,15 @@ class FakeAdapter implements BluetoothAdapterLike {
   }
 
   setOnPairComplete(_handler: (address: string) => void): void {}
+  setOnPairFailed(handler: (address: string, error: string) => void): void {
+    this.pairFailedHandler = handler;
+  }
   setOnDeviceConnected(handler: (address: string) => void): void {
     this.deviceConnectedHandler = handler;
+  }
+
+  triggerPairFailed(address: string, error: string): void {
+    this.pairFailedHandler?.(address, error);
   }
 
   setOnDeviceFound(_handler: (device: BluetoothDevice) => void): void {}
@@ -253,6 +261,20 @@ function makeHarness(
 }
 
 describe("BluetoothService Pi parity", () => {
+  test("reports a failed BlueZ pairing to the pairing UI", async () => {
+    const { adapter, service } = makeHarness([1_000], "linux");
+    const events: Array<[string, unknown]> = [];
+    service.onEvent((event, data) => events.push([event, data]));
+    await service.initialize();
+
+    adapter.triggerPairFailed(DEVICE_ADDRESS, "Page Timeout");
+
+    expect(events).toContainEqual([
+      "pairingCancelled",
+      { error: `Pairing with ${DEVICE_ADDRESS} failed: Page Timeout` },
+    ]);
+  });
+
   test("preserves adapter order even when a Nocturne device is found later", async () => {
     const { adapter, service } = makeHarness([1_000], "linux");
     adapter.devices = [

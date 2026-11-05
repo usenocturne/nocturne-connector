@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { crc32, createChunks, parseChunk } from "./chunking";
+import { ChunkedMessageAssembler, crc32, createChunks, parseChunk } from "./chunking";
 
 const MESSAGE_ID = "12345678-1234-1234-1234-123456789abc";
 const GOLDEN_CHUNKS = [
@@ -38,5 +38,28 @@ describe("RPC checksum compatibility", () => {
         reason: "checksum mismatch",
       });
     }
+  });
+});
+
+describe("ChunkedMessageAssembler", () => {
+  test("ignores a chunk whose total disagrees with the message's first chunk", () => {
+    const assembler = new ChunkedMessageAssembler();
+    expect(assembler.addChunk("m", 0, 2, Buffer.from("he"))).toBeNull();
+    expect(assembler.addChunk("m", 1, 3, Buffer.from("xx"))).toBeNull();
+    expect(assembler.addChunk("m", 1, 2, Buffer.from("llo"))?.toString()).toBe("hello");
+  });
+
+  test("evicts only messages that have been idle past the cutoff", () => {
+    const assembler = new ChunkedMessageAssembler();
+    for (let i = 0; i < 6; i++) assembler.addChunk(`stale-${i}`, 0, 2, Buffer.from("a"), 1_000);
+    assembler.addChunk("mismatched", 0, 2, Buffer.from("he"), 1_000);
+    assembler.addChunk("mismatched", 1, 3, Buffer.from("ignored"), 5_000);
+    assembler.addChunk("other-active", 0, 2, Buffer.from("wo"), 9_000);
+
+    expect(assembler.evictIdleSince(2_000)).toBe(7);
+    expect(assembler.pendingCount).toBe(1);
+    expect(assembler.addChunk("other-active", 1, 2, Buffer.from("rld"), 9_500)?.toString()).toBe(
+      "world",
+    );
   });
 });

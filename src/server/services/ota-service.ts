@@ -229,6 +229,7 @@ export class OTAService {
   private connectorStatus: ConnectorUpdateStatus;
   private connectorStatusListener: ConnectorStatusListener | null = null;
   private lastConnectorCheck: ConnectorUpdateCheckResponse | null = null;
+  private connectorUpdateStarting = false;
   private readonly connectorSelfUpdatesEnabled: boolean;
   private readonly legacyOtaDirectory: string;
   private readonly connectorOtaDirectory: string;
@@ -507,33 +508,38 @@ export class OTAService {
     if (!this.connectorSelfUpdatesEnabled) {
       throw new Error("Connector self-updates are not supported on Windows");
     }
-    if (this.connectorStatus.inProgress) {
+    if (this.connectorStatus.inProgress || this.connectorUpdateStarting) {
       throw new Error("Connector update already in progress");
     }
 
-    const channel = options?.channel ?? this.lastConnectorCheck?.channel ?? "stable";
-    let update = this.lastConnectorCheck;
-    if (!update || (options?.targetVersion && update.version !== options.targetVersion)) {
-      update = await this.checkConnectorUpdate(channel);
-    }
+    this.connectorUpdateStarting = true;
+    try {
+      const channel = options?.channel ?? this.lastConnectorCheck?.channel ?? "stable";
+      let update = this.lastConnectorCheck;
+      if (!update || (options?.targetVersion && update.version !== options.targetVersion)) {
+        update = await this.checkConnectorUpdate(channel);
+      }
 
-    if (!update.updateAvailable || !update.version || !update.imageUrl) {
-      throw new Error(update.message ?? "No connector update available");
-    }
+      if (!update.updateAvailable || !update.version || !update.imageUrl) {
+        throw new Error(update.message ?? "No connector update available");
+      }
 
-    if (!readBootInfo().supported) {
-      throw new Error("Connector A/B boot is not available on this system");
-    }
+      if (!readBootInfo().supported) {
+        throw new Error("Connector A/B boot is not available on this system");
+      }
 
-    void this.runConnectorUpdate(update).catch((err) => {
-      const message = formatError(err);
-      log.error(`Connector update failed: ${message}`);
-      this.updateConnectorStatus({
-        inProgress: false,
-        stage: "failed",
-        error: message,
+      void this.runConnectorUpdate(update).catch((err) => {
+        const message = formatError(err);
+        log.error(`Connector update failed: ${message}`);
+        this.updateConnectorStatus({
+          inProgress: false,
+          stage: "failed",
+          error: message,
+        });
       });
-    });
+    } finally {
+      this.connectorUpdateStarting = false;
+    }
 
     return this.getConnectorUpdateStatus();
   }

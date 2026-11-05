@@ -110,9 +110,11 @@ export class SpotifyWebSocketService {
         this.ws = null;
       }
 
-      this.ws = new WebSocket(`wss://${dealer}/?access_token=${accessToken}`);
+      const ws = new WebSocket(`wss://${dealer}/?access_token=${accessToken}`);
+      this.ws = ws;
 
-      this.ws.onopen = () => {
+      ws.onopen = () => {
+        if (this.ws !== ws) return;
         const now = Date.now();
         this._isConnected = true;
         this.isConnecting = false;
@@ -125,19 +127,22 @@ export class SpotifyWebSocketService {
         this.startTokenRefreshTimer();
       };
 
-      this.ws.onmessage = (event) => {
+      ws.onmessage = (event) => {
+        if (this.ws !== ws) return;
         this.lastMessageTime = Date.now();
         this.handleMessage(String(event.data));
       };
 
-      this.ws.onerror = () => {
+      ws.onerror = () => {
+        if (this.ws !== ws) return;
         if (!this.isIntentionalDisconnect) {
           log.error("WebSocket error");
           this.handleConnectionError(new Error("WebSocket error"));
         }
       };
 
-      this.ws.onclose = () => {
+      ws.onclose = () => {
+        if (this.ws !== ws) return;
         if (!this.isIntentionalDisconnect) {
           this.handleConnectionError(new Error("Connection closed"));
         }

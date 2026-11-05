@@ -32,6 +32,7 @@ const TIMELINE_REANCHOR_INTERVAL: Duration = Duration::from_secs(1);
 const TIMELINE_DISCONTINUITY_THRESHOLD_MS: u64 = 1_500;
 const PAUSED_TIMELINE_CHANGE_THRESHOLD_MS: u64 = 250;
 const ARTWORK_MAX_PIXEL_SIZE: u32 = 300;
+const MAX_THUMBNAIL_BYTES: u64 = 16 * 1024 * 1024;
 const HUNDRED_NS_PER_MILLISECOND: i64 = 10_000;
 const WINDOWS_TO_UNIX_EPOCH_SECONDS: i128 = 11_644_473_600;
 
@@ -435,10 +436,10 @@ impl WindowsMediaState {
                     let Ok(total_size) = stream.Size() else {
                         return;
                     };
-                    let size = total_size.min(4 * 1024 * 1024) as u32;
-                    if size == 0 {
+                    if total_size == 0 || total_size > MAX_THUMBNAIL_BYTES {
                         return;
                     }
+                    let size = total_size as u32;
                     let Ok(load) = reader.LoadAsync(size) else {
                         return;
                     };
