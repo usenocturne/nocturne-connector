@@ -36,7 +36,7 @@
 ## Usage
 
 <details>
-<summary><img src="https://camo.githubusercontent.com/b9c79d36777ba11fe5423f498b522f7b786898772a1ddbb44074fb6bc59adf06/68747470733a2f2f7573656e6f637475726e652e636f6d2f696d616765732f6c6f676f2e706e67" height="14" style="vertical-align: middle;"> Raspberry Pi</summary>
+<summary><img src="https://usenocturne.com/images/logo.png" height="14" style="vertical-align: middle;">Raspberry Pi</summary>
 
 1. Download the [img.gz from the latest release](https://github.com/usenocturne/nocturne-connector/releases/latest).
 2. Use [Raspberry Pi Imager](https://www.raspberrypi.com/software/), [balenaEtcher](https://etcher.balena.io/), or `dd` to flash the image to your SD card.
